@@ -81,6 +81,14 @@ The data directory stays.
 - **Settings**: add a source by its address, remove one, and see where the
   data is.
 
+Videos open in Omarchy's YouTube app, and links to X in its X app. When the
+app is open, Feed switches to it and the link takes the place of what it
+showed. A web app can't be sent to another address, so a new window opens
+where the old one is, and the old one closes; Back does not return to the
+previous page. When the app is not open, it opens on the first empty
+workspace of the monitor in use, the first that `Super` and a number shows
+empty.
+
 | Key | |
 | --- | --- |
 | `Ctrl+1` / `Ctrl+2` | Feed / Settings |
