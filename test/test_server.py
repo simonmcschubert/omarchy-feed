@@ -8,6 +8,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import server  # noqa: E402
@@ -403,6 +404,19 @@ class FeedTest(unittest.TestCase):
         for url in ("javascript:alert(1)", "file:///etc/passwd", "https://x.example/ --flag", "mailto:a@b.example --flag"):
             self.api("POST", "/api/open", {"url": url}, status=400)
         self.assertEqual(len(self.opened), 2)
+
+    def test_x_links_open_in_the_x_app(self):
+        def opened(url):
+            with mock.patch.object(server.subprocess, "Popen") as popen:
+                where = server.open_url(url)
+            return popen.call_args.args[0], where
+
+        for url in ("https://x.com/someone/status/123", "https://www.x.com/someone", "https://twitter.com/someone/status/123"):
+            self.assertEqual(opened(url), (["omarchy-launch-webapp", url], "X"))
+        for url in ("https://x.com.example/someone", "https://notx.com/", "https://help.x.com/en"):
+            self.assertEqual(opened(url)[1], "the browser", url)
+        self.assertEqual(opened("https://www.youtube.com/watch?v=aaa"), (["omarchy-launch-webapp", "https://www.youtube.com/watch?v=aaa"], "YouTube"))
+        self.assertEqual(opened("mailto:team@example.com"), (["xdg-open", "mailto:team@example.com"], "the mail app"))
 
     # --- running only while the window is open
 
