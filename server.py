@@ -67,6 +67,7 @@ IMAGE_TYPES = {
     "avif": "image/avif",
 }
 YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com"}
+X_HOSTS = {"x.com", "www.x.com", "mobile.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com"}
 FEED_PATHS = ("/feed", "/rss", "/feed.xml", "/rss.xml", "/atom.xml", "/index.xml")
 
 STATIC = {
@@ -862,18 +863,26 @@ def is_youtube_video(url):
     return (parts.hostname or "").lower() in YOUTUBE_HOSTS and parts.path in ("/watch", "/live") or (parts.hostname or "").lower() == "youtu.be"
 
 
+def is_x_link(url):
+    return (urllib.parse.urlsplit(url).hostname or "").lower() in X_HOSTS
+
+
 def open_url(url):
-    """Videos open in Omarchy's YouTube web app, email links in the mail app,
-    everything else in the browser."""
+    """Videos open in Omarchy's YouTube web app, links to X in its X web app,
+    email links in the mail app, everything else in the browser. Returns
+    where, for the page to say."""
     if is_youtube_video(url):
-        command = ["omarchy-launch-webapp", url]
+        command, where = ["omarchy-launch-webapp", url], "YouTube"
+    elif is_x_link(url):
+        command, where = ["omarchy-launch-webapp", url], "X"
     elif url.lower().startswith("mailto:"):
-        command = ["xdg-open", url]
+        command, where = ["xdg-open", url], "the mail app"
     elif shutil.which("omarchy-launch-browser"):
-        command = ["omarchy-launch-browser", url]
+        command, where = ["omarchy-launch-browser", url], "the browser"
     else:
-        command = ["xdg-open", url]
+        command, where = ["xdg-open", url], "the browser"
     subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    return where
 
 
 # --- theme -------------------------------------------------------------------------
@@ -1203,11 +1212,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not isinstance(url, str) or not re.match(r"^(https?://|mailto:)[^\s]+$", url, re.I):
             raise ValueError("Only web and email addresses can be opened")
         try:
-            self.server.opener(url)
+            where = self.server.opener(url)
         except OSError as error:
             self.send_json(500, {"error": f"Could not open it: {error}"})
             return
-        self.send_json(200, {"ok": True})
+        self.send_json(200, {"ok": True, "opened_in": where})
 
 
 ROUTES = {

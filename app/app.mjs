@@ -129,7 +129,7 @@ function sourceOf(item) {
 async function openItem(item) {
   if (!item) return;
   if (item.kind === 'video') {
-    await openUrl(item.url, 'Opening in YouTube…');
+    await openUrl(item.url);
     return;
   }
   state.feedScroll = scrollY;
@@ -148,10 +148,10 @@ async function openItem(item) {
   scrollTo(0, 0);
 }
 
-async function openUrl(url, message = 'Opening in the browser…') {
+async function openUrl(url) {
   try {
-    await api('POST', '/api/open', { url });
-    toast(message);
+    const { opened_in } = await api('POST', '/api/open', { url });
+    toast(`Opening in ${opened_in || 'the browser'}…`);
   } catch (error) {
     toast(error.message);
   }

@@ -48,7 +48,8 @@ The data directory stays.
   unread until you mark them read.
 - **Reader**: opens an article. It shows what was removed (for example
   "Removed: 5 ads, 1 poll"). **Open original** opens the article in the
-  browser.
+  browser. Links open in the browser too; links to X (`x.com`) open in
+  Omarchy's X app.
 - **Settings**: add a source by its address, remove one, and see where the
   data is.
 
