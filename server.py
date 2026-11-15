@@ -374,6 +374,9 @@ def atom_content(entry):
         if c is None:
             continue
         if c.get("type") == "xhtml":
+            # Plain tag names: <html:p> would not be a paragraph to the HTML parser.
+            for element in c.iter():
+                element.tag = local_name(element.tag)
             return "".join(ET.tostring(x, encoding="unicode") for x in c)
         if (c.text or "").strip():
             # Atom content without type="html" is plain text.
@@ -1136,7 +1139,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.server.store.source(source_id) is None:
             self.send_json(404, {"error": "No such source"})
             return
-        self.server.store.delete_source(source_id)
+        with self.server.sync_lock:  # a running sync would add items to it
+            self.server.store.delete_source(source_id)
         self.send_json(200, {"ok": True})
 
     def post_content(self, path, item_id):

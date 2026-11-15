@@ -258,6 +258,43 @@ class FeedTest(unittest.TestCase):
         self.assertFalse(server.is_youtube_video("https://www.youtube.com/@theo"))
         self.assertFalse(server.is_youtube_video("https://example.com/watch"))
 
+    def test_atom_xhtml_content_keeps_plain_html_tags(self):
+        feed = (
+            '<feed xmlns="http://www.w3.org/2005/Atom"><title>Blog</title><entry><id>1</id><title>Post</title>'
+            '<link href="https://blog.example/1"/><updated>2026-11-13T10:00:00Z</updated>'
+            '<content type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml"><p>Text with <a href="https://x.example/">a link</a></p>'
+            '<img src="https://blog.example/a.png"/></div></content></entry></feed>'
+        )
+        _, entries = server.parse_feed(feed.encode(), "https://blog.example/feed")
+        self.assertEqual(entries[0].content, '<div><p>Text with <a href="https://x.example/">a link</a></p><img src="https://blog.example/a.png" /></div>')
+
+    def test_removing_a_source_during_a_sync_waits_for_the_sync(self):
+        self.substack()
+        source = self.api("POST", "/api/sources", {"url": self.web.url + "/blog/"})["source"]
+        started, go_on = threading.Event(), threading.Event()
+        real = server.fetch_entries
+
+        def slow(source):
+            started.set()
+            go_on.wait(5)
+            return real(source)
+
+        server.fetch_entries = slow
+        self.addCleanup(setattr, server, "fetch_entries", real)
+        results = {}
+        sync = threading.Thread(target=lambda: results.setdefault("sync", self.request("POST", "/api/sync")[0].status))
+        sync.start()
+        self.assertTrue(started.wait(5))
+        delete = threading.Thread(target=lambda: results.setdefault("delete", self.request("DELETE", f"/api/sources/{source['id']}")[0].status))
+        delete.start()
+        time.sleep(0.3)
+        go_on.set()
+        sync.join(10)
+        delete.join(10)
+        self.assertEqual(results, {"sync": 200, "delete": 200})
+        state = self.api("GET", "/api/state")
+        self.assertEqual((state["sources"], state["items"]), ([], []))
+
     # --- articles
 
     def test_saved_articles_keep_only_local_copies_of_their_images(self):
