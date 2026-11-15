@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Installs Feed on Omarchy: a "Feed" entry in the app launcher that starts
+# the local server and opens the Feed window. Nothing runs at login or in the
+# background. `setup --remove` takes the entry out again; the data stays.
+set -euo pipefail
+
+NAME=Feed
+PORT=47220
+URL="http://localhost:$PORT/"
+DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+DATA_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-feed"
+
+fail() {
+  echo "setup: $*" >&2
+  exit 1
+}
+
+stop_server() {
+  # The page's goodbye stops a running server at once.
+  curl -fs --max-time 2 -X POST -H "Origin: http://127.0.0.1:$PORT" \
+    "http://127.0.0.1:$PORT/api/bye" >/dev/null 2>&1 || true
+}
+
+case ${1:-} in
+  "") ;;
+  --remove)
+    stop_server
+    if command -v omarchy-webapp-remove >/dev/null; then
+      OMARCHY_REMOVE_NOTIFY=false omarchy-webapp-remove "$NAME" || true
+    fi
+    echo "Removed Feed's launcher entry. The data stays in $DATA_DIR."
+    exit 0
+    ;;
+  -h | --help)
+    echo "Usage: setup [--remove]"
+    exit 0
+    ;;
+  *) fail "unknown option: $1" ;;
+esac
+
+command -v omarchy-webapp-install >/dev/null || fail "omarchy-webapp-install not found; is this Omarchy?"
+command -v curl >/dev/null || fail "curl not found"
+PYTHON=$(command -v python3) || fail "python3 not found"
+"$PYTHON" -c 'import sys; sys.exit(sys.version_info < (3, 11))' || fail "Feed needs Python 3.11 or newer"
+[[ $DIR != *[[:space:]\"\\%]* ]] || fail "move the repository to a path without spaces, quotes, backslashes or %"
+
+chmod +x "$DIR/omarchy-feed" "$DIR/server.py"
+# A server still running old code stops, so the next start uses the new code.
+stop_server
+omarchy-webapp-install "$NAME" "$URL" "$DIR/icon.png" "$DIR/omarchy-feed"
+
+echo "App launcher (Super+Space): Feed. Data: $DATA_DIR"
