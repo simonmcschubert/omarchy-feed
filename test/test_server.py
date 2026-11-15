@@ -398,6 +398,18 @@ class FeedTest(unittest.TestCase):
         self.thread.join(5)
         self.assertFalse(self.thread.is_alive())
 
+    def test_setup_stops_the_server_at_once_even_with_a_window_open(self):
+        self.stop()
+        self.start(idle=60)
+        threading.Thread(target=self.server.watch, daemon=True).start()
+        self.api("POST", "/api/stop")
+        try:
+            self.request("GET", "/api/ping")  # the open window's heartbeat
+        except OSError:
+            pass
+        self.thread.join(5)
+        self.assertFalse(self.thread.is_alive())
+
     def test_stops_when_no_window_asks_anything(self):
         self.stop()
         self.start(idle=1)

@@ -29,7 +29,8 @@ server from the cloned directory, so keep it where it is.
 git -C ~/.local/share/omarchy-feed pull && ~/.local/share/omarchy-feed/setup
 ```
 
-Updates never touch the data.
+`setup` stops a running Feed server; an open Feed window then says so. Close
+it and open Feed again for the new version. Updates never touch the data.
 
 ## Remove
 

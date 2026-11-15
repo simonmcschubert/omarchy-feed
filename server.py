@@ -1117,6 +1117,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def post_bye(self, path):
         self.send_json(200, {"ok": True})
 
+    def post_stop(self, path):
+        """Stops the server now, whatever windows are open: setup does this
+        before an update, so the next start runs the new code."""
+        self.send_json(200, {"ok": True})
+        threading.Thread(target=self.server.shutdown, daemon=True).start()
+
     def post_sync(self, path):
         if not self.server.sync_lock.acquire(blocking=False):
             self.send_json(409, {"error": "A sync is already running"})
@@ -1205,6 +1211,7 @@ ROUTES = {
     ("GET", "/api/pending"): Handler.get_pending,
     ("GET", "/api/raw/#"): Handler.get_raw,
     ("POST", "/api/bye"): Handler.post_bye,
+    ("POST", "/api/stop"): Handler.post_stop,
     ("POST", "/api/sync"): Handler.post_sync,
     ("POST", "/api/sources"): Handler.post_source,
     ("DELETE", "/api/sources/#"): Handler.delete_source,
