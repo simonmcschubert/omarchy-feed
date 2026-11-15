@@ -179,16 +179,53 @@ def check_url(url):
     parts = urllib.parse.urlsplit(url)
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise FetchError(f"Not a web address: {url}")
-    if allow_private_hosts:
-        return
+
+
+def public_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None, **kwargs):
+    """socket.create_connection that refuses addresses that are not public.
+    It checks the address it connects to, so a host name that resolves to a
+    public address first and a local one later cannot get through."""
+    host, port = address
     try:
-        infos = socket.getaddrinfo(parts.hostname, None)
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except (socket.gaierror, UnicodeError):
-        raise FetchError(f"Cannot find {parts.hostname}")
-    for info in infos:
-        address = ipaddress.ip_address(info[4][0].split("%", 1)[0])
-        if not address.is_global:
-            raise FetchError(f"{parts.hostname} is not a public address")
+        raise FetchError(f"Cannot find {host}")
+    error = None
+    for family, kind, proto, _, sockaddr in infos:
+        if not allow_private_hosts and not ipaddress.ip_address(sockaddr[0].split("%", 1)[0]).is_global:
+            raise FetchError(f"{host} is not a public address")
+        sock = socket.socket(family, kind, proto)
+        try:
+            if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
+                sock.settimeout(timeout)
+            sock.connect(sockaddr)
+            return sock
+        except OSError as failure:
+            error = failure
+            sock.close()
+    raise error or OSError(f"Cannot connect to {host}")
+
+
+class PublicHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = public_connection
+
+
+class PublicHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = public_connection
+
+
+class PublicHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(PublicHTTPConnection, req)
+
+
+class PublicHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(PublicHTTPSConnection, req, context=self._context)
 
 
 class CheckedRedirects(urllib.request.HTTPRedirectHandler):
@@ -197,7 +234,8 @@ class CheckedRedirects(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-OPENER = urllib.request.build_opener(CheckedRedirects())
+# No proxies from the environment: connections go straight to the checked address.
+OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), PublicHTTPHandler(), PublicHTTPSHandler(), CheckedRedirects())
 
 
 def fetch(url, limit, accept="*/*"):

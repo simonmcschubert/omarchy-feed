@@ -69,6 +69,7 @@ async function sync() {
     render();
     await cleanPending();
     await load();
+    await refreshReader();
     setStatus(updated());
   } catch (error) {
     setStatus(error.message);
@@ -76,6 +77,15 @@ async function sync() {
     state.syncing = false;
     render();
   }
+}
+
+// An article opened while it was still being saved shows its text once
+// the sync has saved it.
+async function refreshReader() {
+  if (state.view !== 'reader' || state.reader?.state === 'ready') return;
+  const item = state.items.find((i) => i.id === state.reader.id);
+  if (!item || item.state === state.reader.state) return;
+  state.reader = item.state === 'ready' ? await api('GET', `/api/items/${item.id}`) : item;
 }
 
 // Cleans the articles the server downloaded, three at a time.

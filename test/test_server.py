@@ -155,10 +155,32 @@ class FeedTest(unittest.TestCase):
         conn.close()
 
     def test_fetching_refuses_local_addresses_outside_tests(self):
+        self.web.pages["/feed"] = (200, "application/xml", rss(FIVE))
         server.allow_private_hosts = False
-        for url in ("http://127.0.0.1/", "http://localhost:8080/", "http://10.0.0.1/", "ftp://example.com/", "file:///etc/passwd"):
+        for url in (self.web.url + "/feed", f"http://localhost:{self.port}/api/ping", "http://10.0.0.1/", "ftp://example.com/", "file:///etc/passwd"):
             with self.assertRaises(server.FetchError, msg=url):
-                server.check_url(url)
+                server.fetch(url, 1000)
+
+    def test_the_address_is_checked_when_connecting(self):
+        # No separate look-up before the request: the answer the connection
+        # uses is the one checked, so a host name cannot switch to a local
+        # address in between.
+        port = int(self.web.url.rsplit(":", 1)[1])
+        real = server.socket.getaddrinfo
+        lookups = []
+
+        def local(host, *args, **kwargs):
+            if host == "rebind.example":
+                lookups.append(host)
+                return [(server.socket.AF_INET, server.socket.SOCK_STREAM, 6, "", ("127.0.0.1", port))]
+            return real(host, *args, **kwargs)
+
+        server.socket.getaddrinfo = local
+        self.addCleanup(setattr, server.socket, "getaddrinfo", real)
+        server.allow_private_hosts = False
+        with self.assertRaisesRegex(server.FetchError, "not a public address"):
+            server.fetch(f"http://rebind.example:{port}/feed", 1000)
+        self.assertEqual(lookups, ["rebind.example"])
 
     # --- sources and sync
 
