@@ -150,6 +150,59 @@ kbd {
   text-overflow: ellipsis;
 }
 
+/* The update button (update.mjs), at the right end of the top bar. */
+.update-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border-color: transparent;
+  padding: 4px 8px;
+}
+
+.update-button:hover:not(:disabled) {
+  background: var(--selection);
+  border-color: var(--border);
+}
+
+.update-button.accent,
+.update-button.accent:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.update-button.red,
+.update-button.red:hover:not(:disabled) {
+  color: var(--red);
+}
+
+.update-button svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.update-button.busy svg {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .update-button.busy svg {
+    animation: none;
+  }
+}
+
 .banner {
   padding: 8px 20px;
   background: var(--surface);

@@ -50,7 +50,7 @@ PYTHON=$(command -v python3) || fail "python3 not found"
 "$PYTHON" -c 'import sys; sys.exit(sys.version_info < (3, 11))' || fail "Feed needs Python 3.11 or newer"
 [[ $DIR != *[[:space:]\"\\%]* ]] || fail "move the repository to a path without spaces, quotes, backslashes or %"
 
-chmod +x "$DIR/omarchy-feed" "$DIR/server.py"
+chmod +x "$DIR/omarchy-feed" "$DIR/server.py" "$DIR/update"
 stop_server
 omarchy-webapp-install "$NAME" "$URL" "$DIR/icon.png" "$DIR/omarchy-feed"
 

@@ -1,6 +1,7 @@
 // Feed: the three views (Feed, Reader, Settings) and the sync. The server
 // fetches; this page cleans each new article (clean.mjs) and posts it back.
 import { cleanArticle } from './clean.mjs';
+import { startUpdates } from './update.mjs';
 
 const state = {
   sources: [],
@@ -20,6 +21,7 @@ const state = {
 
 const $ = (id) => document.getElementById(id);
 const main = $('main');
+let updates = null; // the update button (update.mjs)
 
 // --- server -------------------------------------------------------------------------
 
@@ -32,7 +34,8 @@ async function api(method, path, body) {
       body: body ? JSON.stringify(body) : undefined,
     });
   } catch {
-    banner("Feed's server has stopped. Close this window and open Feed again.");
+    // Unless it restarts with a release: then the page reloads from the new one.
+    if (!updates?.restarting()) banner("Feed's server has stopped. Close this window and open Feed again.");
     throw new Error('The server has stopped');
   }
   const data = await response.json().catch(() => ({}));
@@ -483,6 +486,8 @@ function moveSelection(step, length) {
 $('sync').addEventListener('click', () => sync());
 
 // --- start ----------------------------------------------------------------------------
+
+updates = startUpdates($('update'), { busy: () => state.syncing || state.adding });
 
 (async () => {
   try {

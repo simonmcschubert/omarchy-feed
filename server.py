@@ -6,7 +6,8 @@ when the window closes (or after IDLE_SECONDS without a request). It syncs
 only when the page asks: on opening and with the Sync button.
 
 Listens on 127.0.0.1 only. Data: ~/.local/state/omarchy-feed/ (feed.db and
-the images of saved articles), in a directory only the owner can open.
+the images of saved articles), in a directory only the owner can open. New
+releases come from the update script next to this file.
 
 Python standard library only (3.11 or newer).
 """
@@ -22,6 +23,7 @@ import ipaddress
 import json
 import os
 import re
+import secrets
 import shutil
 import socket
 import sqlite3
@@ -42,6 +44,7 @@ from pathlib import Path
 PORT = 47220
 APP = "omarchy-feed"
 APP_DIR = Path(__file__).resolve().parent / "app"
+UPDATE_SCRIPT = Path(__file__).resolve().parent / "update"
 
 IDLE_SECONDS = 300  # stop when no window has asked anything for this long
 BYE_SECONDS = 5  # stop this soon after the window says it is closing
@@ -57,6 +60,9 @@ MAX_PAGE = 8 * 1024 * 1024
 MAX_IMAGE = 8 * 1024 * 1024
 MAX_IMAGES = 60
 MAX_BODY = 20 * 1024 * 1024
+# Seconds: the first check for a release after the server starts, and then.
+FIRST_CHECK = 15
+CHECK_EVERY = 4 * 60 * 60
 
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
 IMAGE_TYPES = {
@@ -75,6 +81,7 @@ STATIC = {
     "/style.css": ("style.css", "text/css; charset=utf-8"),
     "/app.mjs": ("app.mjs", "text/javascript; charset=utf-8"),
     "/clean.mjs": ("clean.mjs", "text/javascript; charset=utf-8"),
+    "/update.mjs": ("update.mjs", "text/javascript; charset=utf-8"),
     "/icon.svg": ("icon.svg", "image/svg+xml"),
 }
 
@@ -927,17 +934,172 @@ def theme_css(path):
     return ":root {\n" + "\n".join(lines) + "\n}\n"
 
 
+# --- updates -----------------------------------------------------------------------
+
+
+def update_log():
+    base = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    return Path(base) / "omarchy-feed-update.log"
+
+
+def reason(output):
+    """The update script's reason for failing: its last line, after git's."""
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    return lines[-1].removeprefix("update: ") if lines else ""
+
+
+class Updater:
+    """Offers new releases of Feed the way a desktop app offers its updates:
+    it checks shortly after the server starts, every four hours while Feed is
+    open, and when the update button asks; it downloads a release when asked,
+    and installs it with a restart of the server. The update script does the
+    work; the page shows the state (app/update.mjs)."""
+
+    def __init__(self, script, log):
+        self.script = Path(script)
+        self.log = Path(log)  # what the install says
+        # Tells the page that the server restarted, after an install.
+        self.boot = secrets.token_hex(8)
+        self.lock = threading.Lock()  # guards the fields below
+        self.work = threading.Lock()  # one run of the script at a time
+        # "": nothing to offer (up to date, not checked yet, offline, or no
+        # git checkout). Otherwise available, downloading, downloaded,
+        # installing, or failed (download or install; error says why).
+        self.status = ""
+        self.version = ""
+        self.error = ""
+        self.checking = False
+        ok, out, _ = self.run("version")
+        # The installed release: "" before the first or without a checkout.
+        self.installed = out.strip() if ok else ""
+
+    def run(self, *args, timeout=60):
+        """(ok, stdout, reason) of a run of the update script."""
+        try:
+            result = subprocess.run(
+                [str(self.script), *args], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout
+            )
+        except subprocess.TimeoutExpired:
+            return False, "", f"the update script did not finish within {timeout} seconds"
+        except OSError as error:
+            return False, "", f"can't run {self.script}: {error.strerror}"
+        if result.returncode != 0:
+            return False, result.stdout, reason(result.stderr) or "the update script failed"
+        return True, result.stdout, ""
+
+    def snapshot(self):
+        with self.lock:
+            return {
+                "status": self.status,
+                "version": self.version,
+                "error": self.error,
+                "installed": self.installed,
+                "checking": self.checking,
+                "boot": self.boot,
+            }
+
+    def start(self):
+        def checks():
+            time.sleep(FIRST_CHECK)
+            while True:
+                self.check()
+                time.sleep(CHECK_EVERY)
+
+        threading.Thread(target=checks, daemon=True).start()
+
+    def check(self, asked=False):
+        """Looks for a newer release. Returns why the check failed, or "".
+        A check on the timer keeps what an earlier one found when it fails
+        (offline is no reason to hide a release), and leaves a failed update
+        on show until the button is clicked."""
+        with self.lock:
+            if self.status == "installing" or (self.status == "failed" and not asked):
+                return ""
+        with self.work:
+            with self.lock:
+                self.checking = True
+            ok, out, why = self.run("check")
+            with self.lock:
+                self.checking = False
+                if not ok:
+                    sys.stderr.write(f"update check failed: {why}\n")
+                    return why
+                if self.status in ("downloading", "installing"):
+                    return ""  # what those find comes next
+                words = out.split()
+                if len(words) == 2 and words[0] in ("available", "downloaded"):
+                    self.status, self.version = words
+                else:
+                    self.status, self.version = "", ""
+                self.error = ""
+        return ""
+
+    def download(self):
+        with self.lock:
+            if self.status not in ("available", "failed") or not self.version:
+                return
+            self.status, self.error = "downloading", ""
+            version = self.version
+        with self.work:
+            ok, _, why = self.run("download", version, timeout=180)
+        with self.lock:
+            self.status = "downloaded" if ok else "failed"
+            self.error = why
+
+    def install(self):
+        with self.lock:
+            if self.status != "downloaded":
+                return
+            self.status, self.error = "installing", ""
+            version = self.version
+        threading.Thread(target=self.wait_for_install, args=(version,), daemon=True).start()
+
+    def install_command(self, version):
+        return [str(self.script), "install", version]
+
+    def wait_for_install(self, version):
+        """Runs the install, which stops this server and starts the new one.
+        So it runs in a session of its own, and writes to the log, not to a
+        pipe that ends with this server."""
+        with self.work:
+            try:
+                with open(self.log, "w") as log:
+                    process = subprocess.Popen(
+                        self.install_command(version), stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True
+                    )
+                ok, why = process.wait(timeout=600) == 0, ""
+            except subprocess.TimeoutExpired:
+                ok, why = False, "the update did not finish within 10 minutes"
+            except OSError as error:
+                ok, why = False, f"can't start the update: {error.strerror}"
+            try:
+                why = reason(self.log.read_text()) or why
+            except OSError:
+                pass  # the script did not start
+        # A successful install stops this server, so it is still here only
+        # when the install failed, or when it restarted the server on Feed's
+        # port while this is another one (./server.py from the same checkout).
+        with self.lock:
+            if ok:
+                self.status, self.version = "", ""
+            else:
+                self.status, self.error = "failed", why or "the update script failed"
+        if ok:
+            self.check()
+
+
 # --- server ------------------------------------------------------------------------
 
 
 class FeedServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, port, data_dir, theme_path, idle=IDLE_SECONDS, opener=open_url):
+    def __init__(self, port, data_dir, theme_path, idle=IDLE_SECONDS, opener=open_url, updater=None):
         self.store = Store(data_dir)
         self.theme_path = Path(theme_path)
         self.idle = idle
         self.opener = opener
+        self.updater = updater
         self.sync_lock = threading.Lock()
         self.activity = threading.Lock()
         self.last_request = time.monotonic()
@@ -1093,6 +1255,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             },
         )
 
+    def get_update(self, path):
+        if self.server.updater is None:
+            self.send_json(404, {"error": "Not found"})
+            return
+        self.send_json(200, self.server.updater.snapshot())
+
     def get_item(self, path, item_id):
         item = self.server.store.item(item_id)
         if item is None:
@@ -1134,10 +1302,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_json(200, {"ok": True})
 
     def post_stop(self, path):
-        """Stops the server now, whatever windows are open: setup does this
-        before an update, so the next start runs the new code."""
+        """Stops the server now, whatever windows are open: setup and the
+        update script do this, so the next start runs the new code."""
         self.send_json(200, {"ok": True})
         threading.Thread(target=self.server.shutdown, daemon=True).start()
+
+    def post_update(self, path):
+        updater = self.server.updater
+        if updater is None:
+            self.send_json(404, {"error": "Not found"})
+            return
+        action = self.read_json().get("action")
+        if action == "check":
+            why = updater.check(asked=True)
+            self.send_json(200, {**updater.snapshot(), "checkError": why})
+        elif action == "download":
+            updater.download()
+            self.send_json(200, updater.snapshot())
+        elif action == "install":
+            updater.install()
+            self.send_json(200, updater.snapshot())
+        else:
+            raise ValueError("Expected {action: check, download or install}")
 
     def post_sync(self, path):
         if not self.server.sync_lock.acquire(blocking=False):
@@ -1223,11 +1409,13 @@ ROUTES = {
     ("GET", "/theme.css"): Handler.get_theme,
     ("GET", "/api/ping"): Handler.get_ping,
     ("GET", "/api/state"): Handler.get_state,
+    ("GET", "/api/update"): Handler.get_update,
     ("GET", "/api/items/#"): Handler.get_item,
     ("GET", "/api/pending"): Handler.get_pending,
     ("GET", "/api/raw/#"): Handler.get_raw,
     ("POST", "/api/bye"): Handler.post_bye,
     ("POST", "/api/stop"): Handler.post_stop,
+    ("POST", "/api/update"): Handler.post_update,
     ("POST", "/api/sync"): Handler.post_sync,
     ("POST", "/api/sources"): Handler.post_source,
     ("DELETE", "/api/sources/#"): Handler.delete_source,
@@ -1245,10 +1433,12 @@ def main():
     parser.add_argument("--idle", type=int, default=IDLE_SECONDS, help="stop after this many seconds without a request; 0 never stops")
     args = parser.parse_args()
     data_dir = Path(args.data) if args.data else state_dir()
+    updater = Updater(UPDATE_SCRIPT, update_log())
     try:
-        server = FeedServer(args.port, data_dir, theme_file(), idle=args.idle)
+        server = FeedServer(args.port, data_dir, theme_file(), idle=args.idle, updater=updater)
     except OSError as error:
         sys.exit(f"feed: cannot listen on 127.0.0.1:{args.port}: {error.strerror}")
+    updater.start()
     print(f"Feed on http://localhost:{server.server_address[1]}/ (data: {data_dir})", file=sys.stderr, flush=True)
     watcher = threading.Thread(target=server.watch, daemon=True)
     watcher.start()

@@ -25,12 +25,40 @@ server from the cloned directory, so keep it where it is.
 
 ## Update
 
+Feed looks for a new release 15 seconds after it opens and every four hours
+while it is open. The update button, a circle of arrows at the right end of
+the top bar, checks now when clicked; hover it to see the installed version.
+When there is a release, the button turns into a down arrow with **Update**.
+Click it to download the release, then click **Restart to update** to install
+it: Feed restarts its server with the release (after a running sync) and
+reloads the window. When the new server does not answer, Feed goes back to
+the version it had. A notification confirms the update or says why it
+failed. When it fails before the restart (local changes in the checkout, for
+example), the button says **Update failed** and why, when hovered. Like
+`git pull`, this does not show the changes first; the release notes on
+GitHub list them. Updates never touch the data.
+
+![The update button: check, Update, Restart to update, Updating, Up to date](docs/update.png)
+
+Looking for releases asks the repository Feed was cloned from (GitHub) for
+its tags. Nothing about the data or the sources is sent.
+
+The same from a terminal:
+
 ```bash
-git -C ~/.local/share/omarchy-feed pull && ~/.local/share/omarchy-feed/setup
+~/.local/share/omarchy-feed/update check
+~/.local/share/omarchy-feed/update install 0.2.0
 ```
 
-`setup` stops a running Feed server; an open Feed window then says so. Close
-it and open Feed again for the new version. Updates never touch the data.
+With Feed open, the window reloads into the new version within a minute.
+With Feed closed, `update install` starts the new server only to see that it
+answers, and stops it again.
+
+`git -C ~/.local/share/omarchy-feed pull && ~/.local/share/omarchy-feed/setup`
+works too, and is how a copy installed before the update button gets it. It
+takes the newest commit on `main`, released or not. `setup` stops a running
+Feed server; an open Feed window then says so. Close it and open Feed again
+for the new version.
 
 ## Remove
 
@@ -128,13 +156,15 @@ saved.
 ## Development
 
 ```text
-server.py          # local server: page, API, sync, images, SQLite
+server.py          # local server: page, API, sync, images, SQLite, /api/update
 omarchy-feed       # launcher: starts the server, opens or focuses the window
 setup              # launcher entry; --remove undoes
+update             # finds, downloads and installs releases
 app/
 ├── index.html
 ├── app.mjs        # Feed, Reader and Settings; the sync loop
 ├── clean.mjs      # article cleanup and the rules per source (no network)
+├── update.mjs     # the update button
 └── style.css
 ```
 
@@ -148,6 +178,21 @@ Then open `http://localhost:8123/`. Tests:
 
 ```bash
 npm ci                                    # jsdom for the cleanup tests
-node --test                               # clean.mjs
+node --test                               # clean.mjs, update.mjs, update
 python3 -m unittest discover -s test      # server.py
 ```
+
+The tests of `update` run it against real git repositories, with stand-ins
+for `curl` and `setsid`. A server started this way offers updates too, but
+`update install` refuses a checkout that Feed's launcher entry does not
+start, so installing one fails there.
+
+## Releases
+
+Actions › Release › Run workflow, with patch, minor, or major; the first
+release starts from 0.0.0, so minor gives 0.1.0. The workflow tags the `main`
+commit that passed CI as `vX.Y.Z` and creates the GitHub Release with notes
+from the merged pull requests. The tags hold the version (`update version`).
+Installed copies offer the release the next time Feed opens. "Release
+candidate" publishes `vX.Y.Z-rc.N`, which they do not offer, and "Dry run"
+shows the version and notes without publishing.

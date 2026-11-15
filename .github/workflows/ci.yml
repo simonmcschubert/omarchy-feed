@@ -21,11 +21,11 @@ jobs:
       - name: Install test dependencies
         run: npm ci
 
-      - name: Cleanup tests
+      - name: Page and update script tests
         run: node --test
 
       - name: Server tests
         run: python3 -m unittest discover -s test -v
 
       - name: Shell scripts
-        run: shellcheck setup omarchy-feed
+        run: shellcheck setup omarchy-feed update

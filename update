@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+# Finds, downloads, and installs releases of Feed. The server runs it to
+# offer updates (server.py, Updater); it works from a terminal too. A release
+# is a vX.Y.Z tag on the checkout's origin (README.md, "Releases").
+#
+#   update check            prints "current", "available X.Y.Z", or
+#                           "downloaded X.Y.Z" for the newest release
+#   update download X.Y.Z   fetches the release; changes no files
+#   update install X.Y.Z    moves this checkout to the release and starts the
+#                           server with it in place of the running one; goes
+#                           back when the new server does not answer
+#   update version          prints the installed release: X.Y.Z, X.Y.Z-N-gSHA
+#                           N commits past it, or nothing before the first
+#
+# Run without a terminal (as the server does), install also reports its
+# result as a notification.
+set -euo pipefail
+
+export GIT_TERMINAL_PROMPT=0
+export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -oBatchMode=yes}"
+
+# As in setup and the launcher (omarchy-feed).
+PORT=47220
+DIR=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-feed"
+LOG="$STATE/server.log"
+# Where omarchy-webapp-install puts the launcher entry that setup asks for.
+ENTRY="$HOME/.local/share/applications/Feed.desktop"
+NOTIFY=0
+
+notify() {
+  if ((NOTIFY)); then notify-send "$@" 2>/dev/null || true; fi
+}
+
+fail() {
+  local message="$*"
+  echo "update: $message" >&2
+  notify "Feed update failed" "${message^}"
+  exit 1
+}
+
+repo() {
+  git -C "$DIR" "$@"
+}
+
+# "<commit> <version>" of the newest release on origin; nothing without one.
+newest_release() {
+  local refs
+  refs=$(timeout 30 git -C "$DIR" ls-remote --tags origin) || fail "can't reach origin"
+  # An annotated tag is listed twice; its ^{} line names the commit.
+  awk '{
+      tag = $2
+      sub(/^refs\/tags\//, "", tag)
+      peeled = sub(/\^\{\}$/, "", tag)
+      if (tag !~ /^v[0-9]+[.][0-9]+[.][0-9]+$/) next
+      if (peeled || !(tag in commit)) commit[tag] = $1
+    }
+    END { for (tag in commit) print commit[tag], substr(tag, 2) }' <<<"$refs" |
+    sort -k2,2V | tail -n 1
+}
+
+downloaded() {
+  repo rev-parse --quiet --verify "refs/tags/v$1^{commit}"
+}
+
+check() {
+  local release commit version
+  release=$(newest_release)
+  if [[ -z $release ]]; then
+    echo current
+    return
+  fi
+  read -r commit version <<<"$release"
+  if repo merge-base --is-ancestor "$commit" HEAD 2>/dev/null; then
+    echo current
+  elif [[ $(downloaded "$version") == "$commit" ]]; then
+    echo "downloaded $version"
+  else
+    echo "available $version"
+  fi
+}
+
+download() {
+  downloaded "$1" >/dev/null && return
+  timeout 120 git -C "$DIR" fetch --quiet --no-tags origin "refs/tags/v$1:refs/tags/v$1" ||
+    fail "can't download Feed $1"
+}
+
+# Whether Feed's launcher entry starts Feed from this checkout, as setup
+# sets it up.
+launched_from_here() {
+  local launcher
+  launcher=$(sed -n 's/^Exec=//p' "$ENTRY" 2>/dev/null | head -n 1)
+  [[ -n $launcher && $(realpath -e "$launcher" 2>/dev/null) == "$DIR/omarchy-feed" ]]
+}
+
+running() {
+  curl -fs --max-time 1 "http://127.0.0.1:$PORT/api/ping" 2>/dev/null | grep -q '"omarchy-feed"'
+}
+
+# Whether nothing listens on Feed's port any more: curl can't connect.
+gone() {
+  local code=0
+  curl -fs --max-time 1 -o /dev/null "http://127.0.0.1:$PORT/api/ping" 2>/dev/null || code=$?
+  ((code == 7))
+}
+
+# Stops the running server, as setup does, and waits until its port is free.
+stop_server() {
+  local _
+  running || return 0
+  curl -fs --max-time 2 -X POST -H "Origin: http://127.0.0.1:$PORT" \
+    "http://127.0.0.1:$PORT/api/stop" >/dev/null 2>&1 || true
+  for _ in $(seq 50); do
+    gone && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+# Starts the server as the launcher does and waits until it answers. One
+# that does not answer is stopped, so it does not hold the port.
+start_server() {
+  local pid _
+  mkdir -p "$STATE"
+  chmod 700 "$STATE"
+  setsid python3 "$DIR/server.py" --port "$PORT" >>"$LOG" 2>&1 </dev/null &
+  pid=$!
+  for _ in $(seq 50); do
+    running && return 0
+    sleep 0.1
+  done
+  kill "$pid" 2>/dev/null || true
+  return 1
+}
+
+install() {
+  local version=$1 commit moved=0 was_open=0
+  [[ -t 2 ]] || NOTIFY=1
+  launched_from_here ||
+    fail "can't update to $version: Feed's launcher entry does not start Feed from $DIR. Set it up with $DIR/setup"
+  download "$version"
+  commit=$(downloaded "$version")
+  if ! repo merge-base --is-ancestor "$commit" HEAD; then
+    # Going back after a failed start resets the whole checkout.
+    [[ -z $(repo status --porcelain --untracked-files=no) ]] ||
+      fail "can't update to $version: $DIR has local changes"
+    repo merge --ff-only --quiet "$commit" >/dev/null 2>&1 ||
+      fail "can't update to $version: $DIR has local commits"
+    moved=1
+  fi
+  # The new server takes the place of the running one. With Feed closed, it
+  # starts only to show that it answers, and stops again: Feed runs only
+  # while it is open.
+  running && was_open=1
+  if ! stop_server; then
+    if ((moved)); then repo reset --hard --quiet ORIG_HEAD; fi
+    fail "can't update to $version: the running Feed server did not stop. Close Feed and try again"
+  fi
+  if ! start_server; then
+    ((moved)) || fail "Feed did not start again. See $LOG"
+    repo reset --hard --quiet ORIG_HEAD
+    start_server ||
+      fail "Feed $version did not start, and the version before it did not start again either. See $LOG"
+    if ((!was_open)); then stop_server || true; fi
+    fail "Feed $version did not start, so Feed stays as it was. See $LOG"
+  fi
+  if ((!was_open)); then stop_server || true; fi
+  echo "Feed $version is installed."
+  notify "Feed updated" "Version $version is installed."
+}
+
+version() {
+  repo describe --tags --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude 'v*-*' 2>/dev/null | sed 's/^v//' || true
+}
+
+usage() {
+  echo "Usage: update check | download VERSION | install VERSION | version"
+}
+
+case ${1:-} in
+  check | version) ;;
+  download | install)
+    [[ ${2:-} =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "not a release version: '${2:-}'"
+    ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  *)
+    usage >&2
+    exit 1
+    ;;
+esac
+
+# Only Feed's own checkout: not a repository it happens to sit in, such as
+# one that keeps the home directory.
+[[ $(repo rev-parse --show-toplevel 2>/dev/null) == "$DIR" ]] ||
+  fail "$DIR is not a git checkout, so there is nothing to update from"
+
+"$1" "${@:2}"
