@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Opens Feed: starts the local server if it is not running, then opens the
+# Feed window, or focuses it when it is already open. The server stops by
+# itself shortly after the window closes, so nothing runs in the background.
+set -euo pipefail
+
+PORT=47220
+URL="http://localhost:$PORT/"
+DIR=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-feed"
+LOG="$STATE/server.log"
+
+running() {
+  curl -fs --max-time 1 "http://127.0.0.1:$PORT/api/ping" 2>/dev/null | grep -q '"omarchy-feed"'
+}
+
+if ! running; then
+  mkdir -p "$STATE"
+  chmod 700 "$STATE"
+  setsid python3 "$DIR/server.py" --port "$PORT" >>"$LOG" 2>&1 </dev/null &
+  for _ in $(seq 50); do
+    running && break
+    sleep 0.1
+  done
+  if ! running; then
+    echo "omarchy-feed: the server did not start; see $LOG" >&2
+    notify-send "Feed did not start" "See $LOG" 2>/dev/null || true
+    exit 1
+  fi
+fi
+
+exec omarchy-launch-or-focus "$(omarchy-webapp-window-class "$URL")" "omarchy-launch-webapp $URL"

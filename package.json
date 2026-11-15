@@ -1,0 +1,12 @@
+{
+  "name": "omarchy-feed",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "jsdom": "^31.0.1"
+  }
+}
