@@ -14,7 +14,6 @@ Python standard library only (3.11 or newer).
 import argparse
 import concurrent.futures
 import email.utils
-import gzip
 import html
 import html.parser
 import http.client
@@ -35,6 +34,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+import zlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -132,7 +132,7 @@ CREATE TABLE IF NOT EXISTS sources (
   error TEXT
 );
 CREATE TABLE IF NOT EXISTS items (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,  -- never reused: image addresses contain it
   source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
   key TEXT NOT NULL,
   kind TEXT NOT NULL,          -- article | video
@@ -251,7 +251,11 @@ def fetch(url, limit, accept="*/*"):
             if len(data) > limit:
                 raise FetchError(f"Too large: {url}")
             if response.headers.get("Content-Encoding", "").lower() == "gzip":
-                data = gzip.decompress(data)
+                # The limit counts the unpacked size, too.
+                unpack = zlib.decompressobj(wbits=16 + zlib.MAX_WBITS)
+                data = unpack.decompress(data, limit + 1)
+                if len(data) > limit or unpack.unconsumed_tail:
+                    raise FetchError(f"Too large: {url}")
             return response.geturl(), response.headers.get("Content-Type", ""), data
     except urllib.error.HTTPError as error:
         error.close()
@@ -261,7 +265,7 @@ def fetch(url, limit, accept="*/*"):
         if isinstance(reason, FetchError):
             raise reason
         raise FetchError(f"Cannot reach {url}: {getattr(reason, 'strerror', None) or reason}")
-    except (OSError, http.client.HTTPException, EOFError) as error:
+    except (OSError, http.client.HTTPException, EOFError, zlib.error) as error:
         raise FetchError(f"Cannot reach {url}: {error}")
 
 

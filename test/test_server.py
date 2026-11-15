@@ -1,3 +1,4 @@
+import gzip
 import http.client
 import http.server
 import json
@@ -63,6 +64,8 @@ class Web:
                 if isinstance(body, str):
                     body = body.replace("{web}", web.url).encode()
                 self.send_response(status)
+                if body.startswith(b"\x1f\x8b"):
+                    self.send_header("Content-Encoding", "gzip")
                 self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
@@ -294,6 +297,22 @@ class FeedTest(unittest.TestCase):
         self.assertEqual(results, {"sync": 200, "delete": 200})
         state = self.api("GET", "/api/state")
         self.assertEqual((state["sources"], state["items"]), ([], []))
+
+    def test_compressed_responses_are_limited_by_their_unpacked_size(self):
+        self.web.pages["/small.gz"] = (200, "text/html", gzip.compress(b"<p>hello</p>"))
+        self.web.pages["/bomb.gz"] = (200, "text/html", gzip.compress(b"0" * 5_000_000))
+        self.assertEqual(server.fetch(self.web.url + "/small.gz", 1000)[2], b"<p>hello</p>")
+        with self.assertRaisesRegex(server.FetchError, "Too large"):
+            server.fetch(self.web.url + "/bomb.gz", 1_000_000)
+
+    def test_item_numbers_are_not_reused_after_a_source_is_removed(self):
+        # Image addresses contain the item number and may be cached.
+        self.substack()
+        source = self.api("POST", "/api/sources", {"url": self.web.url + "/blog/"})["source"]
+        before = max(i["id"] for i in self.items())
+        self.api("DELETE", f"/api/sources/{source['id']}")
+        self.api("POST", "/api/sources", {"url": self.web.url + "/blog/"})
+        self.assertGreater(min(i["id"] for i in self.items()), before)
 
     # --- articles
 
