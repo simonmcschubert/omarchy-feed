@@ -83,9 +83,12 @@ async function sync() {
 // the sync has saved it.
 async function refreshReader() {
   if (state.view !== 'reader' || state.reader?.state === 'ready') return;
-  const item = state.items.find((i) => i.id === state.reader.id);
-  if (!item || item.state === state.reader.state) return;
-  state.reader = item.state === 'ready' ? await api('GET', `/api/items/${item.id}`) : item;
+  const open = state.reader;
+  const item = state.items.find((i) => i.id === open.id);
+  if (!item || item.state === open.state) return;
+  const fresh = item.state === 'ready' ? await api('GET', `/api/items/${item.id}`) : item;
+  // Unless another article was opened in the meantime.
+  if (state.view === 'reader' && state.reader === open) state.reader = fresh;
 }
 
 // Cleans the articles the server downloaded, three at a time.
