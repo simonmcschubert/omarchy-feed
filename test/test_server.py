@@ -3,6 +3,7 @@ import http.client
 import http.server
 import json
 import os
+import shutil
 import sys
 import tempfile
 import threading
@@ -150,6 +151,22 @@ class FeedTest(unittest.TestCase):
         self.assertIn("default-src 'self'", policy)
         self.assertIn("img-src 'self';", policy)
         self.assertIn(b"/app.mjs", data)
+
+    def test_serves_the_page_as_it_was_when_it_started(self):
+        # A `git pull` while Feed runs changes the files, not this server's
+        # code. A newer page can need files the server does not know (as
+        # app.mjs needed update.mjs), and then never gets past "Loading…".
+        app = Path(self.tmp.name) / "app"
+        shutil.copytree(server.APP_DIR, app)
+        self.addCleanup(setattr, server, "APP_DIR", server.APP_DIR)
+        server.APP_DIR = app
+        self.stop()
+        self.start()
+        started = (app / "app.mjs").read_bytes()
+        (app / "app.mjs").write_text("import './new.mjs';\n")
+        response, data = self.request("GET", "/app.mjs")
+        self.assertEqual(response.status, 200)
+        self.assertEqual(data, started)
 
     def test_refuses_other_hosts_and_writes_from_other_sites(self):
         response, _ = self.request("GET", "/api/state", headers={"Host": "evil.example"})

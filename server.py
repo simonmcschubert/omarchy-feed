@@ -1100,6 +1100,10 @@ class FeedServer(http.server.ThreadingHTTPServer):
         self.idle = idle
         self.opener = opener
         self.updater = updater
+        # The page as it was when this server started: a `git pull` while
+        # Feed runs changes the files, not this server's code, and a page
+        # newer than its server may not load.
+        self.static = {path: (APP_DIR / name).read_bytes() for path, (name, _) in STATIC.items()}
         self.sync_lock = threading.Lock()
         self.activity = threading.Lock()
         self.last_request = time.monotonic()
@@ -1234,7 +1238,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def get_static(self, path):
         name, content_type = STATIC[path]
         extra = {"Content-Security-Policy": CSP} if name.endswith(".html") else None
-        self.send_body(200, (APP_DIR / name).read_bytes(), content_type, extra)
+        self.send_body(200, self.server.static[path], content_type, extra)
 
     def get_theme(self, path):
         self.send_body(200, theme_css(self.server.theme_path).encode(), "text/css; charset=utf-8")
