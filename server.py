@@ -897,8 +897,9 @@ def open_url(url):
     if hyprland:
         if not shutil.which("omarchy-launch-webapp"):
             raise FileNotFoundError("omarchy-launch-webapp not found")
-        # Waiting for the new window takes a moment; the page needn't.
-        threading.Thread(target=open_in_web_app, args=(url, app[1], hyprland), daemon=True).start()
+        # Waiting for the new window takes a moment; the page needn't. Not a
+        # daemon, so a link waiting its turn still opens when the server stops.
+        threading.Thread(target=open_in_web_app, args=(url, app[1], hyprland), daemon=False).start()
         return app[0]
     if app:
         command, where = ["omarchy-launch-webapp", url], app[0]

@@ -762,6 +762,32 @@ class WebAppTest(unittest.TestCase):
             server.open_in_web_app(self.VIDEO, server.web_app(self.VIDEO)[1], server.Hyprland(failing), launch=self.launch)
         self.assertEqual(self.launched, [["omarchy-launch-webapp", self.VIDEO]])
 
+    def test_links_waiting_their_turn_open_when_the_server_stops(self):
+        # Two links from request threads, then the process ends at once, as
+        # when Feed closes: both still open.
+        script = """
+import json, subprocess, sys, threading, time
+sys.path.insert(0, sys.argv[1])
+import server
+opened = []
+def run(args, **kwargs):
+    time.sleep(0.2)
+    out = {"clients": json.dumps([{"address": f"0x{i + 1}", "class": "chrome-youtu.be__a-Default", "workspace": {"id": 3}} for i in range(len(opened))]),
+           "monitors": '[{"focused": true, "activeWorkspace": {"id": 1}}]', "workspaces": "[]"}.get(args[1], "ok")
+    return subprocess.CompletedProcess(args, 0, out, "")
+def popen(command, **kwargs):
+    opened.append(command[-1])
+    print(command[-1], flush=True)
+server.Hyprland.here = classmethod(lambda cls: server.Hyprland(run))
+server.shutil.which = lambda name: "/bin/true"
+server.subprocess.Popen = popen
+handler = threading.Thread(target=lambda: [server.open_url(u) for u in ("https://youtu.be/a", "https://youtu.be/b")], daemon=True)
+handler.start()
+handler.join()
+"""
+        done = subprocess.run([sys.executable, "-c", script, str(Path(server.__file__).parent)], capture_output=True, text=True, timeout=30)
+        self.assertEqual(done.stdout.split(), ["https://youtu.be/a", "https://youtu.be/b"], done.stderr)
+
     def test_finds_hyprland_and_the_web_app_of_a_link(self):
         with mock.patch.dict(os.environ, {"HYPRLAND_INSTANCE_SIGNATURE": ""}):
             self.assertIsNone(server.Hyprland.here())
