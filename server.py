@@ -874,22 +874,166 @@ def is_x_link(url):
     return (urllib.parse.urlsplit(url).hostname or "").lower() in X_HOSTS
 
 
-def open_url(url):
-    """Videos open in Omarchy's YouTube web app, links to X in its X web app,
-    email links in the mail app, everything else in the browser. Returns
-    where, for the page to say."""
+def web_app(url):
+    """The web app a link opens in: its name and the hosts its windows are
+    named after. None for a link the browser opens."""
     if is_youtube_video(url):
-        command, where = ["omarchy-launch-webapp", url], "YouTube"
-    elif is_x_link(url):
-        command, where = ["omarchy-launch-webapp", url], "X"
+        return "YouTube", YOUTUBE_HOSTS | {"youtu.be"}
+    if is_x_link(url):
+        return "X", X_HOSTS
+    return None
+
+
+def launch(command):
+    subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def open_url(url):
+    """Videos open in Omarchy's YouTube web app, links to X in its X web app
+    (see open_in_web_app), email links in the mail app, everything else in the
+    browser. Returns where, for the page to say."""
+    app = web_app(url)
+    hyprland = Hyprland.here() if app else None
+    if hyprland:
+        if not shutil.which("omarchy-launch-webapp"):
+            raise FileNotFoundError("omarchy-launch-webapp not found")
+        # Waiting for the new window takes a moment; the page needn't.
+        threading.Thread(target=open_in_web_app, args=(url, app[1], hyprland), daemon=True).start()
+        return app[0]
+    if app:
+        command, where = ["omarchy-launch-webapp", url], app[0]
     elif url.lower().startswith("mailto:"):
         command, where = ["xdg-open", url], "the mail app"
     elif shutil.which("omarchy-launch-browser"):
         command, where = ["omarchy-launch-browser", url], "the browser"
     else:
         command, where = ["xdg-open", url], "the browser"
-    subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    launch(command)
     return where
+
+
+class Hyprland:
+    """Omarchy's window manager, through hyprctl. Omarchy 4.5 configures it in
+    Lua, where a dispatch is a Lua expression; before, it took a dispatcher
+    and its arguments. As Omarchy's own scripts do, each dispatch tries the
+    Lua one first and the old one when Hyprland does not answer ok."""
+
+    def __init__(self, run=subprocess.run):
+        self.run = run
+
+    @classmethod
+    def here(cls):
+        """Hyprland when Feed runs in it, otherwise None."""
+        if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE") and shutil.which("hyprctl"):
+            return cls()
+        return None
+
+    def get(self, what):
+        """The clients (windows), monitors or workspaces, as JSON."""
+        done = self.run(["hyprctl", what, "-j"], capture_output=True, text=True, timeout=5, check=True)
+        return json.loads(done.stdout)
+
+    def dispatch(self, lua, *old):
+        for args in ([lua], list(old)):
+            done = self.run(["hyprctl", "dispatch", *args], capture_output=True, text=True, timeout=5)
+            if done.returncode == 0 and done.stdout.strip().startswith("ok"):
+                return True
+        return False
+
+    def focus_window(self, address):
+        self.dispatch(f'hl.dsp.focus({{ window = "address:{address}" }})', "focuswindow", f"address:{address}")
+
+    def focus_workspace(self, number, workspace):
+        # o.workspaces.focus is what Super + the number does in Omarchy 4.5.
+        self.dispatch(f"o.workspaces.focus({number})", "workspace", str(workspace))
+
+    def move_window(self, address, workspace):
+        self.dispatch(
+            f'hl.dsp.window.move({{ workspace = "{workspace}", follow = false, window = "address:{address}" }})',
+            "movetoworkspacesilent",
+            f"{workspace},address:{address}",
+        )
+
+    def close_window(self, address):
+        self.dispatch(f'hl.dsp.window.close({{ window = "address:{address}" }})', "closewindow", f"address:{address}")
+
+
+WEB_APP_SECONDS = 10  # how long a web app's new window may take to appear
+web_app_lock = threading.Lock()  # one link at a time, so two quick ones find each other's window
+
+
+def app_windows(clients, hosts):
+    """The web app windows of these hosts, the last focused first. Chromium
+    names an app window after the address it opened, as in
+    chrome-www.youtube.com__watch-Default (see omarchy-webapp-window-class);
+    browser windows are just chromium, so a YouTube tab never counts."""
+    found = []
+    for client in clients:
+        host = client.get("class", "").lower().split("_", 1)[0].partition("-")[2]
+        if host in hosts and client.get("mapped", True) and re.fullmatch(r"0x[0-9a-f]+", client.get("address", ""), re.I):
+            found.append(client)
+    return sorted(found, key=lambda client: client.get("focusHistoryID", 0))
+
+
+def empty_workspace(monitors, workspaces):
+    """The first workspace without windows on the monitor in use, as the
+    number Super goes to it with and its id; None when all ten have windows.
+    Omarchy 4.5 gives each monitor ten of its own (the first 1-10, the next
+    11-20, and so on); before, there were just 1-10."""
+    monitor = next((m for m in monitors if m.get("focused")), None)
+    if not monitor:
+        return None
+    active = int(monitor["activeWorkspace"]["id"])
+    first = (active - 1) // 10 * 10 if active > 0 else 0
+    used = {int(w["id"]) for w in workspaces if w.get("windows")}
+    for number in range(1, 11):
+        if first + number not in used:
+            return number, first + number
+    return None
+
+
+def open_in_web_app(url, hosts, hyprland, launch=launch, wait=WEB_APP_SECONDS):
+    """Opens a link in its web app's window, when one is open, or in a new
+    window on the first empty workspace. A web app is a Chromium window, and
+    nothing outside it can send it to another address, so the link opens in a
+    new window where the old one is, which then closes."""
+    with web_app_lock:
+        old, workspace = None, 0  # the window it replaces, and the workspace for the new one
+        try:
+            clients = hyprland.get("clients")
+            windows = app_windows(clients, hosts)
+            if windows:
+                old = windows[0]
+                hyprland.focus_window(old["address"])
+                workspace = int(old["workspace"]["id"])
+            else:
+                empty = empty_workspace(hyprland.get("monitors"), hyprland.get("workspaces"))
+                if empty:
+                    hyprland.focus_workspace(*empty)
+                    workspace = empty[1]
+            before = {client.get("address") for client in clients}
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as error:
+            sys.stderr.write(f"hyprctl failed, opening {url} where Hyprland puts it: {error}\n")
+            launch(["omarchy-launch-webapp", url])
+            return
+        launch(["omarchy-launch-webapp", url])
+        try:
+            deadline = time.monotonic() + wait
+            while True:
+                time.sleep(0.1)
+                new = [c for c in app_windows(hyprland.get("clients"), hosts) if c["address"] not in before]
+                if new:
+                    break
+                if time.monotonic() > deadline:
+                    return  # no new window, so the old one stays
+            # A window opens on the workspace in view when it appears, which is
+            # another one when the user has moved on in the meantime.
+            if workspace > 0 and int(new[0]["workspace"]["id"]) != workspace:
+                hyprland.move_window(new[0]["address"], workspace)
+            if old:
+                hyprland.close_window(old["address"])
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as error:
+            sys.stderr.write(f"hyprctl failed after opening {url}: {error}\n")
 
 
 # --- theme -------------------------------------------------------------------------

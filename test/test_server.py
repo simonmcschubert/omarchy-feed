@@ -4,11 +4,13 @@ import http.server
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
 import time
 import unittest
+import urllib.parse
 from pathlib import Path
 from unittest import mock
 
@@ -425,7 +427,7 @@ class FeedTest(unittest.TestCase):
 
     def test_x_links_open_in_the_x_app(self):
         def opened(url):
-            with mock.patch.object(server.subprocess, "Popen") as popen:
+            with mock.patch.object(server.subprocess, "Popen") as popen, mock.patch.object(server.Hyprland, "here", return_value=None):
                 where = server.open_url(url)
             return popen.call_args.args[0], where
 
@@ -668,6 +670,103 @@ class UpdateTest(unittest.TestCase):
         self.port = plain.server_address[1]
         self.assertEqual(self.request("GET")[0], 404)
         self.assertEqual(self.request("POST", {"action": "check"})[0], 404)
+
+
+class WebAppTest(unittest.TestCase):
+    """Videos and X links in Omarchy's web apps, with a stand-in for hyprctl:
+    Feed on workspace 1, and a new window where `lands_on` says."""
+
+    VIDEO = "https://www.youtube.com/watch?v=aaa"
+
+    def setUp(self):
+        self.clients = []
+        self.workspaces = []
+        self.monitors = [{"name": "eDP-1", "focused": True, "activeWorkspace": {"id": 1}}]
+        self.window("0xfeed", "chrome-localhost__-Default", 1)
+        self.lua = True  # Hyprland configured in Lua, as in Omarchy 4.5
+        self.dispatched = []
+        self.launched = []
+        self.lands_on = None  # the workspace the new window opens on; None: it doesn't
+
+    def window(self, address, cls, workspace, focus=0):
+        self.clients.append({"address": address, "class": cls, "workspace": {"id": workspace}, "mapped": True, "focusHistoryID": focus})
+        for w in self.workspaces:
+            if w["id"] == workspace:
+                w["windows"] += 1
+                break
+        else:
+            self.workspaces.append({"id": workspace, "windows": 1})
+
+    def hyprctl(self, args, **kwargs):
+        if args[1] == "dispatch":
+            self.dispatched.append(args[2:])
+            ok = args[2].startswith(("hl.", "o.")) == self.lua
+            return subprocess.CompletedProcess(args, 0, "ok\n" if ok else "Invalid dispatcher\n", "")
+        return subprocess.CompletedProcess(args, 0, json.dumps(getattr(self, args[1])), "")
+
+    def launch(self, command):
+        self.launched.append(command)
+        if self.lands_on:
+            # Chromium names an app window as omarchy-webapp-window-class says.
+            parts = urllib.parse.urlsplit(command[-1])
+            self.window("0x9999", f"chrome-{parts.hostname}_{parts.path.replace('/', '_')}-Default", self.lands_on)
+
+    def open(self, url, wait=2):
+        server.open_in_web_app(url, server.web_app(url)[1], server.Hyprland(self.hyprctl), launch=self.launch, wait=wait)
+        self.assertEqual(self.launched, [["omarchy-launch-webapp", url]])
+
+    def test_replaces_the_web_app_window_that_is_open(self):
+        self.window("0xa1", "chrome-www.youtube.com__watch-Default", 4, focus=2)
+        self.window("0xa2", "chrome-youtube.com__-Default", 5, focus=1)  # focused last
+        self.window("0xb1", "chromium", 2)  # a browser window, maybe on YouTube
+        self.window("0xc1", "chrome-x.com__-Default", 3)
+        self.lands_on = 5
+        self.open(self.VIDEO)
+        self.assertEqual(self.dispatched, [['hl.dsp.focus({ window = "address:0xa2" })'], ['hl.dsp.window.close({ window = "address:0xa2" })']])
+
+    def test_without_one_it_opens_on_the_first_empty_workspace(self):
+        self.window("0xa1", "chrome-x.com__-Default", 2)
+        self.workspaces.append({"id": 3, "windows": 0})
+        self.lands_on = 3
+        self.open(self.VIDEO)
+        self.assertEqual(self.dispatched, [["o.workspaces.focus(3)"]])
+
+    def test_each_monitor_has_its_own_ten_and_older_hyprland_its_own_words(self):
+        self.lua = False
+        self.monitors = [{"name": "eDP-1", "focused": False, "activeWorkspace": {"id": 1}}, {"name": "DP-1", "focused": True, "activeWorkspace": {"id": 12}}]
+        self.window("0x2", "kitty", 11)
+        self.window("0x3", "kitty", 12)
+        self.lands_on = 13
+        self.open("https://x.com/someone/status/1")
+        self.assertEqual(self.dispatched, [["o.workspaces.focus(3)"], ["workspace", "13"]])
+
+    def test_a_window_that_opens_elsewhere_moves_to_its_workspace(self):
+        self.window("0xa1", "chrome-x.com__-Default", 4)
+        self.lands_on = 1
+        self.open("https://twitter.com/someone")
+        self.assertEqual(
+            self.dispatched[1:],
+            [['hl.dsp.window.move({ workspace = "4", follow = false, window = "address:0x9999" })'], ['hl.dsp.window.close({ window = "address:0xa1" })']],
+        )
+
+    def test_the_old_window_stays_when_no_new_one_opens(self):
+        self.window("0xa1", "chrome-www.youtube.com__watch-Default", 4)
+        self.open(self.VIDEO, wait=0.3)
+        self.assertEqual(self.dispatched, [['hl.dsp.focus({ window = "address:0xa1" })']])
+
+    def test_opens_the_link_when_hyprctl_fails(self):
+        def failing(args, **kwargs):
+            raise subprocess.CalledProcessError(1, args)
+
+        with mock.patch.object(server.sys, "stderr"):
+            server.open_in_web_app(self.VIDEO, server.web_app(self.VIDEO)[1], server.Hyprland(failing), launch=self.launch)
+        self.assertEqual(self.launched, [["omarchy-launch-webapp", self.VIDEO]])
+
+    def test_finds_hyprland_and_the_web_app_of_a_link(self):
+        with mock.patch.dict(os.environ, {"HYPRLAND_INSTANCE_SIGNATURE": ""}):
+            self.assertIsNone(server.Hyprland.here())
+        self.assertIsNone(server.web_app("https://www.youtube.com/@theo"))
+        self.assertEqual(server.web_app("https://youtu.be/aaa")[0], "YouTube")
 
 
 if __name__ == "__main__":
