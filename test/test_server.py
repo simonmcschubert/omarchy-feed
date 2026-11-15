@@ -388,12 +388,13 @@ class FeedTest(unittest.TestCase):
         self.assertEqual((state["sources"], state["items"]), ([], []))
         self.assertFalse(any(self.server.store.images.iterdir()))
 
-    def test_opens_only_web_addresses(self):
+    def test_opens_only_web_and_email_addresses(self):
         self.api("POST", "/api/open", {"url": "https://www.youtube.com/watch?v=aaa"})
-        self.assertEqual(self.opened, ["https://www.youtube.com/watch?v=aaa"])
-        for url in ("javascript:alert(1)", "file:///etc/passwd", "https://x.example/ --flag"):
+        self.api("POST", "/api/open", {"url": "mailto:team@example.com"})
+        self.assertEqual(self.opened, ["https://www.youtube.com/watch?v=aaa", "mailto:team@example.com"])
+        for url in ("javascript:alert(1)", "file:///etc/passwd", "https://x.example/ --flag", "mailto:a@b.example --flag"):
             self.api("POST", "/api/open", {"url": url}, status=400)
-        self.assertEqual(len(self.opened), 1)
+        self.assertEqual(len(self.opened), 2)
 
     # --- running only while the window is open
 

@@ -861,9 +861,12 @@ def is_youtube_video(url):
 
 
 def open_url(url):
-    """Videos open in Omarchy's YouTube web app, everything else in the browser."""
+    """Videos open in Omarchy's YouTube web app, email links in the mail app,
+    everything else in the browser."""
     if is_youtube_video(url):
         command = ["omarchy-launch-webapp", url]
+    elif url.lower().startswith("mailto:"):
+        command = ["xdg-open", url]
     elif shutil.which("omarchy-launch-browser"):
         command = ["omarchy-launch-browser", url]
     else:
@@ -1195,8 +1198,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def post_open(self, path):
         url = self.read_json().get("url")
-        if not isinstance(url, str) or not re.match(r"^https?://[^\s]+$", url, re.I):
-            raise ValueError("Only web addresses can be opened")
+        if not isinstance(url, str) or not re.match(r"^(https?://|mailto:)[^\s]+$", url, re.I):
+            raise ValueError("Only web and email addresses can be opened")
         try:
             self.server.opener(url)
         except OSError as error:
