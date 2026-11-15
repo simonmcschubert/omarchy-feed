@@ -174,7 +174,8 @@ Run it without installing, with its own data and without stopping by itself:
 ./server.py --port 8123 --data /tmp/feed-dev --idle 0
 ```
 
-Then open `http://localhost:8123/`. Tests:
+Then open `http://localhost:8123/`. The server reads `app/` once when it
+starts, so restart it to see changes there. Tests:
 
 ```bash
 npm ci                                    # jsdom for the cleanup tests
