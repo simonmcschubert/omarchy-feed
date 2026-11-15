@@ -290,15 +290,31 @@ function cleanImage(img, doc, base) {
   return out;
 }
 
+// The widest candidate up to 1600 pixels, else the narrowest. Read as
+// browsers do: an address runs to the next space (commas inside it belong to
+// it, one at its end ends the candidate); its descriptor runs to the next comma.
 function largestFromSrcset(srcset) {
-  let best = null;
-  let bestWidth = -1;
-  for (const part of srcset.split(/,\s+/)) {
-    const [url, descriptor = ''] = part.trim().split(/\s+/);
-    const width = Number.parseInt(descriptor, 10) || 0;
-    if (url && width <= 1600 && width > bestWidth) [best, bestWidth] = [url, width];
+  const candidates = [];
+  let i = 0;
+  while (i < srcset.length) {
+    while (i < srcset.length && /[\s,]/.test(srcset[i])) i++;
+    let end = i;
+    while (end < srcset.length && !/\s/.test(srcset[end])) end++;
+    let url = srcset.slice(i, end);
+    let descriptor = '';
+    if (url.endsWith(',')) {
+      url = url.replace(/,+$/, '');
+    } else {
+      const comma = srcset.indexOf(',', end);
+      descriptor = srcset.slice(end, comma === -1 ? srcset.length : comma);
+      end = comma === -1 ? srcset.length : comma + 1;
+    }
+    if (url) candidates.push([url, Number.parseInt(descriptor.trim(), 10) || 0]);
+    i = end;
   }
-  return best;
+  const fitting = candidates.filter(([, width]) => width <= 1600).sort((a, b) => b[1] - a[1]);
+  const all = [...candidates].sort((a, b) => a[1] - b[1]);
+  return (fitting[0] || all[0] || [null])[0];
 }
 
 function absolute(value, base, schemes) {

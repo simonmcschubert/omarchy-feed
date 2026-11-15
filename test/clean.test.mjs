@@ -148,3 +148,17 @@ test('a header image inside the first paragraph goes, a later one stays', () => 
   assert.deepEqual([...body(html).querySelectorAll('img')].map((i) => i.getAttribute('src')), ['https://x.example/mid.png']);
   assert.equal(removed['header image'], 1);
 });
+
+test('srcset: candidates with or without spaces after commas, and addresses that contain commas', () => {
+  const doc = parse(`<body><p>Text</p>
+    <img srcset="large.jpg 2000w,small.jpg 800w">
+    <img srcset="https://substackcdn.com/image/fetch/w_424,c_limit,f_webp/a.png 424w, https://substackcdn.com/image/fetch/w_1456,c_limit,f_webp/a.png 1456w">
+    <img srcset="huge.jpg 3000w">
+  </body>`);
+  const { html } = cleanArticle(doc, { url: 'https://site.example/', page: false });
+  assert.deepEqual([...body(html).querySelectorAll('img')].map((i) => i.getAttribute('src')), [
+    'https://site.example/small.jpg',
+    'https://substackcdn.com/image/fetch/w_1456,c_limit,f_webp/a.png',
+    'https://site.example/huge.jpg',
+  ]);
+});
