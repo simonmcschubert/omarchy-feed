@@ -66,6 +66,8 @@ class Web:
                 self.send_response(status)
                 if body.startswith(b"\x1f\x8b"):
                     self.send_header("Content-Encoding", "gzip")
+                if status in (301, 302):
+                    self.send_header("Location", body.decode())
                 self.send_header("Content-Type", content_type)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
@@ -216,6 +218,14 @@ class FeedTest(unittest.TestCase):
         self.assertNotIn("x()", raw)
         self.assertNotIn("p{}", raw)
         self.assertNotIn("color:red", raw)
+
+    def test_an_article_that_moved_keeps_its_new_address_for_cleanup(self):
+        self.web.pages["/feed"] = (200, "application/rss+xml", rss([("Moved", "moved", "Fri, 13 Nov 2026 10:00:00 GMT", "<p>Teaser</p>")]))
+        self.web.pages["/p/moved"] = (301, "text/html", "/p/moved/")
+        self.web.pages["/p/moved/"] = (200, "text/html", '<html><body><p>Article</p><img src="chart.png"></body></html>')
+        self.api("POST", "/api/sources", {"url": self.web.url + "/feed"})
+        pending = self.api("GET", "/api/pending")["items"]
+        self.assertEqual(pending[0]["url"], self.web.url + "/p/moved/", "relative images resolve against this address")
 
     def test_a_beehiiv_site_without_feed_uses_its_sitemap(self):
         self.web.pages["/"] = (200, "text/html", '<html><head><meta property="og:site_name" content="Letter AI"></head><body>beehiiv</body></html>')

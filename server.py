@@ -748,7 +748,7 @@ def sync(store, source_ids=None):
         (MAX_ATTEMPTS,),
     )
     with concurrent.futures.ThreadPoolExecutor(WORKERS) as pool:
-        for item, (page, error) in zip(todo, pool.map(_try_page, todo)):
+        for item, (final, page, error) in zip(todo, pool.map(_try_page, todo)):
             if error:
                 store.run(
                     "UPDATE items SET attempts = attempts + 1, error = ?,"
@@ -757,9 +757,11 @@ def sync(store, source_ids=None):
                 )
                 continue
             title = page_title(head_info(page)) if item["source_kind"] == "sitemap" else None
+            # The address after redirects: the cleanup resolves relative links and images against it.
             store.run(
-                "UPDATE items SET state = 'clean', raw = ?, raw_is_page = 1, error = NULL, title = COALESCE(NULLIF(?, ''), title) WHERE id = ?",
-                (page, title, item["id"]),
+                "UPDATE items SET state = 'clean', raw = ?, raw_is_page = 1, error = NULL, url = ?,"
+                " title = COALESCE(NULLIF(?, ''), title) WHERE id = ?",
+                (page, final, title, item["id"]),
             )
     store.prune(now() - KEEP_READ_DAYS * 86400)
     pending = store.query("SELECT COUNT(*) AS n FROM items WHERE state = 'clean'")[0]["n"]
@@ -775,10 +777,10 @@ def _try_entries(source):
 
 def _try_page(item):
     try:
-        _, content_type, data = fetch(item["url"], MAX_PAGE, "text/html,application/xhtml+xml")
-        return decode_html(data, content_type), None
+        final, content_type, data = fetch(item["url"], MAX_PAGE, "text/html,application/xhtml+xml")
+        return final, decode_html(data, content_type), None
     except FetchError as error:
-        return None, str(error)
+        return None, None, str(error)
 
 
 def image_type(data):
