@@ -240,6 +240,8 @@ OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), PublicHTTP
 
 def fetch(url, limit, accept="*/*"):
     """GET url; returns (final url, content type, bytes). Raises FetchError."""
+    # Non-ASCII characters in the path or query, as some feeds write them.
+    url = urllib.parse.quote(url, safe=":/?#[]@!$&'()*+,;=%~")
     check_url(url)
     headers = {"User-Agent": USER_AGENT, "Accept": accept, "Accept-Language": "en"}
     if urllib.parse.urlsplit(url).hostname in YOUTUBE_HOSTS:
@@ -265,7 +267,7 @@ def fetch(url, limit, accept="*/*"):
         if isinstance(reason, FetchError):
             raise reason
         raise FetchError(f"Cannot reach {url}: {getattr(reason, 'strerror', None) or reason}")
-    except (OSError, http.client.HTTPException, EOFError, zlib.error) as error:
+    except (OSError, http.client.HTTPException, EOFError, zlib.error, ValueError) as error:
         raise FetchError(f"Cannot reach {url}: {error}")
 
 

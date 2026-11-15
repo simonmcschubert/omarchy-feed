@@ -273,9 +273,10 @@ function onlyInline(el) {
 function cleanImage(img, doc, base) {
   const size = (name) => Number.parseInt(img.getAttribute(name) || '', 10);
   if (size('width') <= 2 || size('height') <= 2) return null; // tracking pixel
-  const candidates = [img.getAttribute('src'), img.getAttribute('data-src'), img.getAttribute('data-lazy-src'), img.getAttribute('data-original')];
-  const srcset = img.getAttribute('srcset') || img.getAttribute('data-srcset');
-  if (srcset) candidates.push(largestFromSrcset(srcset));
+  // A lazy-loading page keeps the real image in data-src and the like; src
+  // may be a placeholder.
+  const srcset = img.getAttribute('data-srcset') || img.getAttribute('srcset');
+  const candidates = [img.getAttribute('data-src'), img.getAttribute('data-lazy-src'), img.getAttribute('data-original'), srcset && largestFromSrcset(srcset), img.getAttribute('src')];
   let src = null;
   for (const candidate of candidates) {
     src = absolute(candidate, base, ['http:', 'https:']);

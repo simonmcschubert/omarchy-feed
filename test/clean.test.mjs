@@ -109,6 +109,7 @@ test('a web page: finds the article, drops header image and duplicate title, kee
       <img src="data:image/png;base64,AAAA">
       <img src="pixel.gif" width="1" height="1">
       <img data-src="lazy.jpg" src="data:image/gif;base64,R0">
+      <img data-src="real.jpg" src="/placeholder.gif">
       <img srcset="small.jpg 400w, big.jpg 1200w, huge.jpg 3000w">
       <p><a href="javascript:alert(1)">bad link</a> and <a href="/relative">relative</a></p>
       <p style="color:red" class="x" onmouseover="x()">Styled</p>
@@ -121,7 +122,7 @@ test('a web page: finds the article, drops header image and duplicate title, kee
   const out = body(html);
   assert.deepEqual(removed, { embeds: 1, 'header image': 1 });
   assert.equal(out.querySelector('h1'), null);
-  assert.deepEqual([...out.querySelectorAll('img')].map((i) => i.getAttribute('src')), ['https://blog.example/posts/lazy.jpg', 'https://blog.example/posts/big.jpg']);
+  assert.deepEqual([...out.querySelectorAll('img')].map((i) => i.getAttribute('src')), ['https://blog.example/posts/lazy.jpg', 'https://blog.example/posts/real.jpg', 'https://blog.example/posts/big.jpg']);
   assert.deepEqual([...out.querySelectorAll('p')].map((p) => p.textContent).slice(1, 3), ['Loose text in a div', 'Another div']);
   const links = [...out.querySelectorAll('a')];
   assert.equal(links[0].getAttribute('href'), null, 'javascript: link loses its address');

@@ -227,6 +227,14 @@ class FeedTest(unittest.TestCase):
         pending = self.api("GET", "/api/pending")["items"]
         self.assertEqual(pending[0]["url"], self.web.url + "/p/moved/", "relative images resolve against this address")
 
+    def test_article_addresses_with_non_ascii_characters(self):
+        self.web.pages["/feed"] = (200, "application/rss+xml", rss([("Café", "café", "Fri, 13 Nov 2026 10:00:00 GMT", "<p>Teaser</p>")]))
+        self.web.pages["/p/caf%C3%A9"] = (200, "text/html", "<html><body><p>Article</p></body></html>")
+        self.api("POST", "/api/sources", {"url": self.web.url + "/feed"})
+        self.assertEqual(self.api("POST", "/api/sync")["errors"], {})
+        pending = self.api("GET", "/api/pending")["items"]
+        self.assertIn("Article", self.api("GET", f"/api/raw/{pending[0]['id']}")["html"])
+
     def test_a_beehiiv_site_without_feed_uses_its_sitemap(self):
         self.web.pages["/"] = (200, "text/html", '<html><head><meta property="og:site_name" content="Letter AI"></head><body>beehiiv</body></html>')
         self.web.pages["/sitemap.xml"] = (
