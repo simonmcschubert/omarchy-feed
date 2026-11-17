@@ -19,11 +19,9 @@ set -euo pipefail
 export GIT_TERMINAL_PROMPT=0
 export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -oBatchMode=yes}"
 
-# As in setup and the launcher (omarchy-feed).
-PORT=47220
 DIR=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-STATE="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-feed"
-LOG="$STATE/server.log"
+# shellcheck source=SCRIPTDIR/server-control.sh
+source "$DIR/server-control.sh"
 # Where omarchy-webapp-install puts the launcher entry that setup asks for.
 ENTRY="$HOME/.local/share/applications/Feed.desktop"
 NOTIFY=0
@@ -92,46 +90,6 @@ launched_from_here() {
   local launcher
   launcher=$(sed -n 's/^Exec=//p' "$ENTRY" 2>/dev/null | head -n 1)
   [[ -n $launcher && $(realpath -e "$launcher" 2>/dev/null) == "$DIR/omarchy-feed" ]]
-}
-
-running() {
-  curl -fs --max-time 1 "http://127.0.0.1:$PORT/api/ping" 2>/dev/null | grep -q '"omarchy-feed"'
-}
-
-# Whether nothing listens on Feed's port any more: curl can't connect.
-gone() {
-  local code=0
-  curl -fs --max-time 1 -o /dev/null "http://127.0.0.1:$PORT/api/ping" 2>/dev/null || code=$?
-  ((code == 7))
-}
-
-# Stops the running server, as setup does, and waits until its port is free.
-stop_server() {
-  local _
-  running || return 0
-  curl -fs --max-time 2 -X POST -H "Origin: http://127.0.0.1:$PORT" \
-    "http://127.0.0.1:$PORT/api/stop" >/dev/null 2>&1 || true
-  for _ in $(seq 50); do
-    gone && return 0
-    sleep 0.1
-  done
-  return 1
-}
-
-# Starts the server as the launcher does and waits until it answers. One
-# that does not answer is stopped, so it does not hold the port.
-start_server() {
-  local pid _
-  mkdir -p "$STATE"
-  chmod 700 "$STATE"
-  setsid python3 "$DIR/server.py" --port "$PORT" >>"$LOG" 2>&1 </dev/null &
-  pid=$!
-  for _ in $(seq 50); do
-    running && return 0
-    sleep 0.1
-  done
-  kill "$pid" 2>/dev/null || true
-  return 1
 }
 
 install() {
