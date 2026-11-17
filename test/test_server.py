@@ -4,6 +4,7 @@ import http.server
 import io
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -466,9 +467,9 @@ class FeedTest(unittest.TestCase):
 
     def test_x_links_open_in_the_x_app(self):
         def opened(url):
-            with mock.patch.object(server.subprocess, "Popen") as popen, mock.patch.object(server.Hyprland, "here", return_value=None):
-                where = server.open_url(url)
-            return popen.call_args.args[0], where
+            launched = []
+            where = server.LinkOpener(None, launch=launched.append, which=lambda name: None).open(url)
+            return launched[0], where
 
         for url in ("https://x.com/someone/status/123", "https://www.x.com/someone", "https://twitter.com/someone/status/123"):
             self.assertEqual(opened(url), (["omarchy-launch-webapp", url], "X"))
@@ -795,8 +796,10 @@ class WebAppTest(unittest.TestCase):
             parts = urllib.parse.urlsplit(command[-1])
             self.window("0x9999", f"chrome-{parts.hostname}_{parts.path.replace('/', '_')}-Default", self.lands_on)
 
-    def open(self, url, wait=2):
-        server.open_in_web_app(url, server.web_app(url)[1], server.Hyprland(self.hyprctl), launch=self.launch, wait=wait)
+    def open(self, url, wait=2, hyprctl=None):
+        links = server.LinkOpener(server.Hyprland(hyprctl or self.hyprctl), launch=self.launch, which=lambda name: f"/usr/bin/{name}", wait=wait)
+        self.assertEqual(links.open(url), server.web_app(url)[0])
+        links.close()
         self.assertEqual(self.launched, [["omarchy-launch-webapp", url]])
 
     def test_replaces_the_web_app_window_that_is_open(self):
@@ -843,34 +846,51 @@ class WebAppTest(unittest.TestCase):
             raise subprocess.CalledProcessError(1, args)
 
         with mock.patch.object(server.sys, "stderr"):
-            server.open_in_web_app(self.VIDEO, server.web_app(self.VIDEO)[1], server.Hyprland(failing), launch=self.launch)
-        self.assertEqual(self.launched, [["omarchy-launch-webapp", self.VIDEO]])
+            self.open(self.VIDEO, hyprctl=failing)
 
     def test_links_waiting_their_turn_open_when_the_server_stops(self):
-        # Two links from request threads, then the process ends at once, as
-        # when Feed closes: both still open.
-        script = """
-import json, subprocess, sys, threading, time
-sys.path.insert(0, sys.argv[1])
-import server
-opened = []
-def run(args, **kwargs):
-    time.sleep(0.2)
-    out = {"clients": json.dumps([{"address": f"0x{i + 1}", "class": "chrome-youtu.be__a-Default", "workspace": {"id": 3}} for i in range(len(opened))]),
-           "monitors": '[{"focused": true, "activeWorkspace": {"id": 1}}]', "workspaces": "[]"}.get(args[1], "ok")
-    return subprocess.CompletedProcess(args, 0, out, "")
-def popen(command, **kwargs):
-    opened.append(command[-1])
-    print(command[-1], flush=True)
-server.Hyprland.here = classmethod(lambda cls: server.Hyprland(run))
-server.shutil.which = lambda name: "/bin/true"
-server.subprocess.Popen = popen
-handler = threading.Thread(target=lambda: [server.open_url(u) for u in ("https://youtu.be/a", "https://youtu.be/b")], daemon=True)
-handler.start()
-handler.join()
+        # Feed's server as the launcher starts it, in Hyprland, with stand-ins
+        # for hyprctl and the web app launcher. Two links, then the server
+        # stops at once, as when Feed closes: both still open.
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        (tmp / "bin").mkdir()
+        opened = tmp / "opened"
+        (tmp / "bin" / "omarchy-launch-webapp").write_text(f'#!/bin/sh\necho "$1" >> "{opened}"\n')
+        (tmp / "bin" / "hyprctl").write_text(
+            f"""#!{sys.executable}
+import json, pathlib, sys, time
+time.sleep(0.1)
+if sys.argv[1] == "dispatch":
+    sys.exit(print("ok"))
+links = pathlib.Path("{opened}").read_text().split() if pathlib.Path("{opened}").exists() else []
+print(json.dumps({{
+    "clients": [{{"address": f"0x{{i + 1}}", "class": "chrome-youtu.be__a-Default", "workspace": {{"id": 3}}}} for i in range(len(links))],
+    "monitors": [{{"focused": True, "activeWorkspace": {{"id": 1}}}}],
+    "workspaces": [],
+}}[sys.argv[1]]))
 """
-        done = subprocess.run([sys.executable, "-c", script, str(Path(server.__file__).parent)], capture_output=True, text=True, timeout=30)
-        self.assertEqual(done.stdout.split(), ["https://youtu.be/a", "https://youtu.be/b"], done.stderr)
+        )
+        for name in ("omarchy-launch-webapp", "hyprctl"):
+            (tmp / "bin" / name).chmod(0o755)
+        env = {**os.environ, "PATH": f"{tmp / 'bin'}:{os.environ['PATH']}", "HYPRLAND_INSTANCE_SIGNATURE": "test"}
+        feed = subprocess.Popen(
+            [sys.executable, server.__file__, "--port", "0", "--data", str(tmp / "data"), "--idle", "0"],
+            env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+        )
+        self.addCleanup(feed.kill)
+        port = int(re.search(r"localhost:(\d+)/", feed.stderr.readline()).group(1))
+        headers = {"Host": f"localhost:{port}", "Origin": f"http://localhost:{port}", "Content-Type": "application/json"}
+        for url in ("https://youtu.be/a", "https://youtu.be/b", None):
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            if url:
+                conn.request("POST", "/api/open", json.dumps({"url": url}), headers)
+            else:
+                conn.request("POST", "/api/stop", headers=headers)
+            self.assertEqual(conn.getresponse().status, 200)
+            conn.close()
+        self.assertEqual(feed.wait(30), 0)
+        self.assertEqual(opened.read_text().split(), ["https://youtu.be/a", "https://youtu.be/b"])
 
     def test_finds_hyprland_and_the_web_app_of_a_link(self):
         with mock.patch.dict(os.environ, {"HYPRLAND_INSTANCE_SIGNATURE": ""}):
