@@ -168,6 +168,7 @@ server.py          # local server: page, API, sync, images, SQLite, /api/update
 omarchy-feed       # launcher: starts the server, opens or focuses the window
 setup              # launcher entry; --remove undoes
 update             # finds, downloads and installs releases
+server-control.sh  # starts and stops the server; the three above source it
 app/
 ├── index.html
 ├── app.mjs        # Feed, Reader and Settings; the sync loop
@@ -187,12 +188,12 @@ starts, so restart it to see changes there. Tests:
 
 ```bash
 npm ci                                    # jsdom for the cleanup tests
-node --test                               # clean.mjs, update.mjs, update
+node --test                               # clean.mjs, update.mjs, the scripts
 python3 -m unittest discover -s test      # server.py
 ```
 
-The tests of `update` run it against real git repositories, with stand-ins
-for `curl` and `setsid`. A server started this way offers updates too, but
+The tests of `update`, the launcher and `setup` run them against real git
+repositories, with stand-ins for `curl`, `setsid` and Omarchy's commands. A server started this way offers updates too, but
 `update install` refuses a checkout that Feed's launcher entry does not
 start, so installing one fails there.
 

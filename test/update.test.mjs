@@ -1,15 +1,18 @@
 // Tests for the update script against real git repositories: an "origin"
-// with releases and an installed checkout cloned from it. curl, setsid and
-// notify-send are stand-ins that log their calls; a file named "server"
-// stands for a Feed server listening on its port. Run: node --test
+// with releases and an installed checkout cloned from it, and for the
+// launcher and setup, which start and stop the server the same way
+// (server-control.sh). curl, setsid, notify-send and Omarchy's commands are
+// stand-ins that log their calls; a file named "server" stands for a Feed
+// server listening on its port. Run: node --test
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 const SCRIPT = new URL('../update', import.meta.url).pathname;
+const SCRIPTS = ['update', 'server-control.sh', 'omarchy-feed', 'setup'].map((name) => new URL(`../${name}`, import.meta.url).pathname);
 
 function sandbox(t) {
   const root = mkdtempSync(join(tmpdir(), 'feed-update-'));
@@ -41,6 +44,8 @@ esac`);
   // then the server fails as it starts.
   logged('setsid', `[[ -e "${app}/broken" ]] && exit 1; touch "${server}"`);
   logged('notify-send');
+  for (const name of ['omarchy-launch-or-focus', 'omarchy-webapp-install', 'omarchy-webapp-remove']) logged(name);
+  stub('omarchy-webapp-window-class', 'echo chrome-localhost__-Default');
   // Short waits keep the tests quick; the server starts in the background.
   stub('sleep', 'exec /bin/sleep 0.01');
 
@@ -63,11 +68,10 @@ esac`);
   const origin = join(root, 'origin');
   mkdirSync(origin);
   git(origin, 'init', '--quiet', '--initial-branch=main');
-  // Each commit carries the script, as every real release does.
+  // Each commit carries the scripts, as every real release does.
   const commit = (message, files = {}) => {
-    copyFileSync(SCRIPT, join(origin, 'update'));
+    for (const script of SCRIPTS) copyFileSync(script, join(origin, basename(script)));
     writeFileSync(join(origin, 'server.py'), '# server\n');
-    writeFileSync(join(origin, 'omarchy-feed'), '# launcher\n');
     for (const [name, text] of Object.entries(files)) writeFileSync(join(origin, name), text);
     git(origin, 'add', '-A');
     git(origin, 'commit', '--quiet', '--allow-empty', '-m', message);
@@ -93,6 +97,8 @@ esac`);
 
   // stdin and stderr are pipes, as when the server runs it: no terminal.
   const run = (...args) => spawnSync(join(app, 'update'), args, { env, encoding: 'utf8' });
+  const launch = () => spawnSync(join(app, 'omarchy-feed'), [], { env, encoding: 'utf8' });
+  const setup = (...args) => spawnSync(join(app, 'setup'), args, { env, encoding: 'utf8' });
   const calls = () => (existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : []);
   const count = (pattern) => calls().filter((call) => pattern.test(call)).length;
   const starts = () => count(/^setsid python3 .*\/app\/server\.py --port 47220$/);
@@ -100,7 +106,7 @@ esac`);
   const running = () => existsSync(server);
   const head = () => git(app, 'rev-parse', 'HEAD');
 
-  return { root, origin, app, git, commit, release, entry, install, open, run, calls, starts, stops, running, head };
+  return { root, origin, app, git, commit, release, entry, install, open, run, launch, setup, calls, count, starts, stops, running, head };
 }
 
 test('check finds the newest release on origin', (t) => {
@@ -323,6 +329,7 @@ test('refuses a copy that is not its own checkout', (t) => {
   const nested = join(s.app, 'copy');
   mkdirSync(nested, { recursive: true });
   copyFileSync(SCRIPT, join(nested, 'update'));
+  copyFileSync(new URL('../server-control.sh', import.meta.url).pathname, join(nested, 'server-control.sh'));
 
   const r = spawnSync(join(nested, 'update'), ['check'], { encoding: 'utf8' });
   assert.equal(r.status, 1);
@@ -357,4 +364,60 @@ test('version names the installed release', (t) => {
   rmSync(s.app, { recursive: true });
   s.install();
   assert.match(s.run('version').stdout, /^0\.1\.0-1-g[0-9a-f]+\n$/);
+});
+
+test('the launcher starts the server when it is not running, then opens the window', (t) => {
+  const s = sandbox(t);
+  s.release('0.1.0');
+  s.install();
+
+  let r = s.launch();
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual([s.starts(), s.running()], [1, true]);
+  assert.equal(s.calls().at(-1), 'omarchy-launch-or-focus chrome-localhost__-Default omarchy-launch-webapp http://localhost:47220/');
+
+  r = s.launch();
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(s.starts(), 1, 'a running server is used');
+  assert.equal(s.count(/^omarchy-launch-or-focus /), 2);
+});
+
+test('the launcher says when the server does not start', (t) => {
+  const s = sandbox(t);
+  s.release('0.1.0', { broken: 'x\n' });
+  s.install();
+
+  const r = s.launch();
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /^omarchy-feed: the server did not start; see .*\/state\/omarchy-feed\/server\.log\n$/);
+  assert.match(s.calls().at(-1), /^notify-send Feed did not start See .*server\.log$/);
+  assert.equal(s.count(/^omarchy-launch-or-focus /), 0);
+});
+
+test('setup stops a running server, then adds the launcher entry', (t) => {
+  const s = sandbox(t);
+  s.release('0.1.0');
+  s.install();
+  s.open();
+
+  const r = s.setup();
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual([s.stops(), s.running()], [1, false]);
+  assert.equal(s.calls().at(-1), `omarchy-webapp-install Feed http://localhost:47220/ ${s.app}/icon.png ${s.app}/omarchy-feed`);
+  assert.match(r.stdout, /^App launcher \(Super\+Space\): Feed\. Data: .*\/state\/omarchy-feed\n$/);
+});
+
+test('setup stops when the running server does not', (t) => {
+  const s = sandbox(t);
+  s.release('0.1.0');
+  s.install();
+  s.open();
+  writeFileSync(join(s.root, 'stuck'), '');
+
+  for (const args of [[], ['--remove']]) {
+    const r = s.setup(...args);
+    assert.equal(r.status, 1);
+    assert.equal(r.stderr, 'setup: the running Feed server did not stop; close Feed and run setup again\n');
+  }
+  assert.equal(s.count(/^omarchy-webapp-(install|remove) /), 0);
 });
