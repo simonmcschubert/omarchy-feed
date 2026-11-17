@@ -1,9 +1,11 @@
 import gzip
 import http.client
 import http.server
+import io
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -179,6 +181,18 @@ class FeedTest(unittest.TestCase):
         conn.request("POST", "/api/sync", headers={"Host": f"localhost:{self.port}"})  # no Origin
         self.assertEqual(conn.getresponse().status, 403)
         conn.close()
+
+    def test_an_unexpected_error_gets_an_answer(self):
+        # Without one, the page takes the server for stopped.
+        log = io.StringIO()
+        with mock.patch.object(self.server.store, "items", side_effect=sqlite3.OperationalError("database is locked")), mock.patch.object(server.sys, "stderr", log):
+            response, data = self.request("GET", "/api/state")
+        self.assertEqual((response.status, json.loads(data)), (500, {"error": "Something went wrong; server.log says what"}))
+        self.assertIn("sqlite3.OperationalError: database is locked", log.getvalue())
+        full = mock.Mock(write=mock.Mock(side_effect=OSError(28, "No space left on device")))
+        with mock.patch.object(self.server.store, "items", side_effect=OSError(28, "No space left on device")), mock.patch.object(server.sys, "stderr", full):
+            self.assertEqual(self.request("GET", "/api/state")[0].status, 500, "also when server.log can't be written")
+        self.assertEqual(self.api("GET", "/api/ping"), {"app": "omarchy-feed"})
 
     def test_fetching_refuses_local_addresses_outside_tests(self):
         self.web.pages["/feed"] = (200, "application/xml", rss(FIVE))
