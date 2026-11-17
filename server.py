@@ -32,6 +32,7 @@ import sys
 import threading
 import time
 import tomllib
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -1428,6 +1429,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_json(400, {"error": str(error)})
         except FetchError as error:
             self.send_json(502, {"error": str(error)})
+        except Exception:
+            # A bug. Without an answer, the page would take the server for stopped.
+            try:
+                self.log_error("%s", traceback.format_exc().rstrip())
+            except OSError:
+                pass  # a full disk, say
+            self.send_json(500, {"error": "Something went wrong; server.log says what"})
         finally:
             self.server.end()
 
