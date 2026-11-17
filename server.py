@@ -22,6 +22,7 @@ import http.server
 import ipaddress
 import json
 import os
+import queue
 import re
 import secrets
 import shutil
@@ -954,31 +955,6 @@ def launch(command):
     subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
 
-def open_url(url):
-    """Videos open in Omarchy's YouTube web app, links to X in its X web app
-    (see open_in_web_app), email links in the mail app, everything else in the
-    browser. Returns where, for the page to say."""
-    app = web_app(url)
-    hyprland = Hyprland.here() if app else None
-    if hyprland:
-        if not shutil.which("omarchy-launch-webapp"):
-            raise FileNotFoundError("omarchy-launch-webapp not found")
-        # Waiting for the new window takes a moment; the page needn't. Not a
-        # daemon, so a link waiting its turn still opens when the server stops.
-        threading.Thread(target=open_in_web_app, args=(url, app[1], hyprland), daemon=False).start()
-        return app[0]
-    if app:
-        command, where = ["omarchy-launch-webapp", url], app[0]
-    elif url.lower().startswith("mailto:"):
-        command, where = ["xdg-open", url], "the mail app"
-    elif shutil.which("omarchy-launch-browser"):
-        command, where = ["omarchy-launch-browser", url], "the browser"
-    else:
-        command, where = ["xdg-open", url], "the browser"
-    launch(command)
-    return where
-
-
 class Hyprland:
     """Omarchy's window manager, through hyprctl. Omarchy 4.5 configures it in
     Lua, where a dispatch is a Lua expression; before, it took a dispatcher
@@ -1026,7 +1002,6 @@ class Hyprland:
 
 
 WEB_APP_SECONDS = 10  # how long a web app's new window may take to appear
-web_app_lock = threading.Lock()  # one link at a time, so two quick ones find each other's window
 
 
 def app_windows(clients, hosts):
@@ -1059,36 +1034,86 @@ def empty_workspace(monitors, workspaces):
     return None
 
 
-def open_in_web_app(url, hosts, hyprland, launch=launch, wait=WEB_APP_SECONDS):
-    """Opens a link in its web app's window, when one is open, or in a new
-    window on the first empty workspace. A web app is a Chromium window, and
-    nothing outside it can send it to another address, so the link opens in a
-    new window where the old one is, which then closes."""
-    with web_app_lock:
+class LinkOpener:
+    """Opens links where Omarchy shows them: videos in its YouTube web app,
+    links to X in its X web app, email links in the mail app, everything else
+    in the browser. In Hyprland, a web app link takes the place of what the
+    app's window shows (see open_in_web_app). That waits for the new window,
+    so it happens after the request, one link at a time, so two quick ones
+    find each other's window."""
+
+    def __init__(self, hyprland, launch=launch, which=shutil.which, wait=WEB_APP_SECONDS):
+        self.hyprland = hyprland  # None outside Hyprland
+        self.launch = launch
+        self.which = which
+        self.wait = wait
+        self.links = queue.Queue()
+        if hyprland:
+            threading.Thread(target=self.work, daemon=True).start()
+
+    def open(self, url):
+        """Opens a link; returns where, for the page to say."""
+        app = web_app(url)
+        if app and self.hyprland:
+            if not self.which("omarchy-launch-webapp"):
+                raise FileNotFoundError("omarchy-launch-webapp not found")
+            self.links.put((url, app[1]))
+            return app[0]
+        if app:
+            command, where = ["omarchy-launch-webapp", url], app[0]
+        elif url.lower().startswith("mailto:"):
+            command, where = ["xdg-open", url], "the mail app"
+        elif self.which("omarchy-launch-browser"):
+            command, where = ["omarchy-launch-browser", url], "the browser"
+        else:
+            command, where = ["xdg-open", url], "the browser"
+        self.launch(command)
+        return where
+
+    def close(self):
+        """Waits for the links still waiting their turn, so they open when
+        the server stops."""
+        self.links.join()
+
+    def work(self):
+        while True:
+            url, hosts = self.links.get()
+            try:
+                self.open_in_web_app(url, hosts)
+            except Exception:
+                sys.stderr.write(f"could not open {url}:\n{traceback.format_exc()}")
+            finally:
+                self.links.task_done()
+
+    def open_in_web_app(self, url, hosts):
+        """Opens a link in its web app's window, when one is open, or in a new
+        window on the first empty workspace. A web app is a Chromium window,
+        and nothing outside it can send it to another address, so the link
+        opens in a new window where the old one is, which then closes."""
         old, workspace = None, 0  # the window it replaces, and the workspace for the new one
         try:
-            clients = hyprland.get("clients")
+            clients = self.hyprland.get("clients")
             windows = app_windows(clients, hosts)
             if windows:
                 old = windows[0]
-                hyprland.focus_window(old["address"])
+                self.hyprland.focus_window(old["address"])
                 workspace = int(old["workspace"]["id"])
             else:
-                empty = empty_workspace(hyprland.get("monitors"), hyprland.get("workspaces"))
+                empty = empty_workspace(self.hyprland.get("monitors"), self.hyprland.get("workspaces"))
                 if empty:
-                    hyprland.focus_workspace(*empty)
+                    self.hyprland.focus_workspace(*empty)
                     workspace = empty[1]
             before = {client.get("address") for client in clients}
         except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as error:
             sys.stderr.write(f"hyprctl failed, opening {url} where Hyprland puts it: {error}\n")
-            launch(["omarchy-launch-webapp", url])
+            self.launch(["omarchy-launch-webapp", url])
             return
-        launch(["omarchy-launch-webapp", url])
+        self.launch(["omarchy-launch-webapp", url])
         try:
-            deadline = time.monotonic() + wait
+            deadline = time.monotonic() + self.wait
             while True:
                 time.sleep(0.1)
-                new = [c for c in app_windows(hyprland.get("clients"), hosts) if c["address"] not in before]
+                new = [c for c in app_windows(self.hyprland.get("clients"), hosts) if c["address"] not in before]
                 if new:
                     break
                 if time.monotonic() > deadline:
@@ -1096,9 +1121,9 @@ def open_in_web_app(url, hosts, hyprland, launch=launch, wait=WEB_APP_SECONDS):
             # A window opens on the workspace in view when it appears, which is
             # another one when the user has moved on in the meantime.
             if workspace > 0 and int(new[0]["workspace"]["id"]) != workspace:
-                hyprland.move_window(new[0]["address"], workspace)
+                self.hyprland.move_window(new[0]["address"], workspace)
             if old:
-                hyprland.close_window(old["address"])
+                self.hyprland.close_window(old["address"])
         except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as error:
             sys.stderr.write(f"hyprctl failed after opening {url}: {error}\n")
 
@@ -1305,11 +1330,11 @@ class Updater:
 class FeedServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, port, data_dir, theme_path, idle=IDLE_SECONDS, opener=open_url, updater=None):
+    def __init__(self, port, data_dir, theme_path, idle=IDLE_SECONDS, opener=None, updater=None):
         self.store = Store(data_dir)
         self.theme_path = Path(theme_path)
         self.idle = idle
-        self.opener = opener
+        self.opener = opener or LinkOpener(None).open
         self.updater = updater
         # The page as it was when this server started: a `git pull` while
         # Feed runs changes the files, not this server's code, and a page
@@ -1647,8 +1672,9 @@ def main():
     args = parser.parse_args()
     data_dir = Path(args.data) if args.data else state_dir()
     updater = Updater(UPDATE_SCRIPT, update_log())
+    links = LinkOpener(Hyprland.here())
     try:
-        server = FeedServer(args.port, data_dir, theme_file(), idle=args.idle, updater=updater)
+        server = FeedServer(args.port, data_dir, theme_file(), idle=args.idle, opener=links.open, updater=updater)
     except OSError as error:
         sys.exit(f"feed: cannot listen on 127.0.0.1:{args.port}: {error.strerror}")
     updater.start()
@@ -1662,6 +1688,7 @@ def main():
     finally:
         server.stopped.set()
         server.server_close()
+        links.close()
         server.store.close()
 
 
