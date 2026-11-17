@@ -643,26 +643,28 @@ class Store:
         with self.lock:
             self.db.close()
 
-    def query(self, sql, args=()):
+    def _query(self, sql, args=()):
         with self.lock:
             return [dict(row) for row in self.db.execute(sql, args)]
 
-    def run(self, sql, args=()):
+    def _run(self, sql, args=()):
         with self.lock:
             return self.db.execute(sql, args)
 
+    # Sources
+
     def source(self, source_id):
-        rows = self.query("SELECT * FROM sources WHERE id = ?", (source_id,))
+        rows = self._query("SELECT * FROM sources WHERE id = ?", (source_id,))
         return rows[0] if rows else None
 
     def sources(self):
-        return self.query("SELECT * FROM sources ORDER BY title COLLATE NOCASE")
+        return self._query("SELECT * FROM sources ORDER BY title COLLATE NOCASE")
 
     def add_source(self, new):
         with self.lock:
-            if self.query("SELECT id FROM sources WHERE fetch_url = ?", (new.fetch_url,)):
+            if self._query("SELECT id FROM sources WHERE fetch_url = ?", (new.fetch_url,)):
                 raise FetchError(f"{new.title} is already a source")
-            cursor = self.run(
+            cursor = self._run(
                 "INSERT INTO sources (kind, platform, site, title, url, fetch_url, added_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (new.kind, new.platform, new.site, new.title, new.url, new.fetch_url, now()),
             )
@@ -670,20 +672,24 @@ class Store:
 
     def delete_source(self, source_id):
         with self.lock:
-            ids = [r["id"] for r in self.query("SELECT id FROM items WHERE source_id = ?", (source_id,))]
-            self.run("DELETE FROM sources WHERE id = ?", (source_id,))
+            ids = [r["id"] for r in self._query("SELECT id FROM items WHERE source_id = ?", (source_id,))]
+            self._run("DELETE FROM sources WHERE id = ?", (source_id,))
         for item_id in ids:
             self.remove_images(item_id)
 
-    def add_entries(self, source, entries):
-        """Stores entries not seen before; returns how many show up as new.
-        A source's first sync shows only its newest FIRST_SYNC_ITEMS; the
-        others are kept as seen, so they never show up later."""
+    def sync_failed(self, source_id, error):
+        self._run("UPDATE sources SET error = ? WHERE id = ?", (error, source_id))
+
+    def add_entries(self, source_id, entries):
+        """Stores the entries of a source's sync not seen before and marks the
+        source synced; returns how many show up as new. A source's first sync
+        shows only its newest FIRST_SYNC_ITEMS; the others are kept as seen,
+        so they never show up later."""
         added = 0
         with self.lock:
-            first = not self.query("SELECT 1 FROM items WHERE source_id = ? LIMIT 1", (source["id"],))
+            first = not self._query("SELECT 1 FROM items WHERE source_id = ? LIMIT 1", (source_id,))
             for index, entry in enumerate(entries):
-                if self.query("SELECT 1 FROM items WHERE source_id = ? AND key = ?", (source["id"], entry.key)):
+                if self._query("SELECT 1 FROM items WHERE source_id = ? AND key = ?", (source_id, entry.key)):
                     continue
                 raw, raw_is_page = None, None
                 if first and index >= FIRST_SYNC_ITEMS:
@@ -694,28 +700,106 @@ class Store:
                     state, raw, raw_is_page = "clean", entry.content, 0
                 else:
                     state = "fetch"
-                self.run(
+                self._run(
                     "INSERT INTO items (source_id, key, kind, state, title, url, published, added_at, raw, raw_is_page)"
                     " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (source["id"], entry.key, entry.kind, state, entry.title or entry.url, entry.url, entry.published, now(), raw, raw_is_page),
+                    (source_id, entry.key, entry.kind, state, entry.title or entry.url, entry.url, entry.published, now(), raw, raw_is_page),
                 )
                 added += state != "seen"
+            self._run("UPDATE sources SET synced_at = ?, error = NULL WHERE id = ?", (now(), source_id))
         return added
 
+    # Items: an entry is stored as seen (never shown), video, or as an article
+    # that goes fetch -> clean -> ready; fetch and clean may end in failed.
+    # Read items go back to seen after KEEP_READ_DAYS, so they never return.
+
     def items(self):
-        return self.query(
+        return self._query(
             "SELECT i.id, i.source_id, i.kind, i.state, i.title, i.url, i.published, i.added_at, i.read_at, i.error"
             " FROM items i WHERE i.state != 'seen'"
             " ORDER BY COALESCE(i.published, i.added_at) DESC, i.id DESC"
         )
 
     def item(self, item_id):
-        rows = self.query(
+        rows = self._query(
             "SELECT i.id, i.source_id, i.kind, i.state, i.title, i.url, i.published, i.added_at, i.read_at,"
             " i.error, i.content, i.removed FROM items i WHERE i.id = ? AND i.state != 'seen'",
             (item_id,),
         )
         return rows[0] if rows else None
+
+    def pages_to_fetch(self):
+        """Articles whose page is to be downloaded, with their source's kind."""
+        return self._query(
+            "SELECT i.id, i.url, s.kind AS source_kind FROM items i JOIN sources s ON s.id = i.source_id"
+            " WHERE i.state = 'fetch' AND i.attempts < ?",
+            (MAX_ATTEMPTS,),
+        )
+
+    def page_fetched(self, item_id, url, page, title=None):
+        """Keeps a downloaded page for cleanup. `url` is the address after
+        redirects: the cleanup resolves relative links and images against it."""
+        self._run(
+            "UPDATE items SET state = 'clean', raw = ?, raw_is_page = 1, error = NULL, url = ?,"
+            " title = COALESCE(NULLIF(?, ''), title) WHERE id = ? AND state = 'fetch'",
+            (page, url, title, item_id),
+        )
+
+    def page_failed(self, item_id, error):
+        """Counts a failed download; after MAX_ATTEMPTS the article failed."""
+        self._run(
+            "UPDATE items SET attempts = attempts + 1, error = ?,"
+            " state = CASE WHEN attempts + 1 >= ? THEN 'failed' ELSE state END WHERE id = ? AND state = 'fetch'",
+            (error, MAX_ATTEMPTS, item_id),
+        )
+
+    def pending(self):
+        """Articles waiting for the page to clean them up, with what the
+        cleanup needs to know."""
+        rows = self._query(
+            "SELECT i.id, i.title, i.url, i.raw_is_page, s.site, s.platform FROM items i"
+            " JOIN sources s ON s.id = i.source_id WHERE i.state = 'clean' ORDER BY i.id"
+        )
+        return [{**r, "page": bool(r.pop("raw_is_page"))} for r in rows]
+
+    def raw(self, item_id):
+        """The HTML of an article waiting for cleanup; None for any other."""
+        rows = self._query("SELECT raw FROM items WHERE id = ? AND state = 'clean'", (item_id,))
+        return rows[0]["raw"] if rows else None
+
+    def save_article(self, item_id, content, removed, images):
+        """Saves a cleaned article with its images ({name: bytes}). False
+        when it is no longer waiting for cleanup, as when its source was
+        removed meanwhile; then nothing is saved."""
+        with self.lock:
+            if self.raw(item_id) is None:
+                return False
+            self.remove_images(item_id)
+            if images:
+                folder = self.images / str(int(item_id))
+                folder.mkdir(mode=0o700, parents=True)
+                for name, data in images.items():
+                    (folder / name).write_bytes(data)
+            self._run(
+                "UPDATE items SET state = 'ready', raw = NULL, content = ?, removed = ?, error = NULL WHERE id = ?",
+                (content, json.dumps(removed), item_id),
+            )
+        return True
+
+    def cleanup_failed(self, item_id, error):
+        """Marks an article waiting for cleanup failed; False for any other."""
+        cursor = self._run("UPDATE items SET state = 'failed', raw = NULL, error = ? WHERE id = ? AND state = 'clean'", (error, item_id))
+        return cursor.rowcount > 0
+
+    def mark_read(self, item_ids, read):
+        """Marks items read now, or unread. Items already read keep their time."""
+        stamp = now()
+        with self.lock:
+            for item_id in item_ids:
+                if read:
+                    self._run("UPDATE items SET read_at = ? WHERE id = ? AND read_at IS NULL AND state != 'seen'", (stamp, item_id))
+                else:
+                    self._run("UPDATE items SET read_at = NULL WHERE id = ? AND state != 'seen'", (item_id,))
 
     def remove_images(self, item_id):
         shutil.rmtree(self.images / str(int(item_id)), ignore_errors=True)
@@ -723,10 +807,10 @@ class Store:
     def prune(self, before):
         """Deletes items read before `before`; keeps the seen markers."""
         with self.lock:
-            ids = [r["id"] for r in self.query("SELECT id FROM items WHERE read_at IS NOT NULL AND read_at < ? AND state != 'seen'", (before,))]
+            ids = [r["id"] for r in self._query("SELECT id FROM items WHERE read_at IS NOT NULL AND read_at < ? AND state != 'seen'", (before,))]
             for item_id in ids:
                 # A small marker stays, so the entry is not added again.
-                self.run("UPDATE items SET state = 'seen', raw = NULL, content = NULL, removed = NULL WHERE id = ?", (item_id,))
+                self._run("UPDATE items SET state = 'seen', raw = NULL, content = NULL, removed = NULL WHERE id = ?", (item_id,))
         for item_id in ids:
             self.remove_images(item_id)
         return len(ids)
@@ -746,36 +830,21 @@ def sync(store, source_ids=None):
     added, errors = 0, {}
     for source, (entries, error) in zip(sources, results):
         if error:
-            store.run("UPDATE sources SET error = ? WHERE id = ?", (error, source["id"]))
+            store.sync_failed(source["id"], error)
             errors[source["id"]] = error
             continue
-        added += store.add_entries(source, entries)
-        store.run("UPDATE sources SET synced_at = ?, error = NULL WHERE id = ?", (now(), source["id"]))
+        added += store.add_entries(source["id"], entries)
 
-    todo = store.query(
-        "SELECT i.id, i.url, s.kind AS source_kind FROM items i JOIN sources s ON s.id = i.source_id"
-        " WHERE i.state = 'fetch' AND i.attempts < ?",
-        (MAX_ATTEMPTS,),
-    )
+    todo = store.pages_to_fetch()
     with concurrent.futures.ThreadPoolExecutor(WORKERS) as pool:
         for item, (final, page, error) in zip(todo, pool.map(_try_page, todo)):
             if error:
-                store.run(
-                    "UPDATE items SET attempts = attempts + 1, error = ?,"
-                    " state = CASE WHEN attempts + 1 >= ? THEN 'failed' ELSE state END WHERE id = ?",
-                    (error, MAX_ATTEMPTS, item["id"]),
-                )
+                store.page_failed(item["id"], error)
                 continue
             title = page_title(head_info(page)) if item["source_kind"] == "sitemap" else None
-            # The address after redirects: the cleanup resolves relative links and images against it.
-            store.run(
-                "UPDATE items SET state = 'clean', raw = ?, raw_is_page = 1, error = NULL, url = ?,"
-                " title = COALESCE(NULLIF(?, ''), title) WHERE id = ?",
-                (page, final, title, item["id"]),
-            )
+            store.page_fetched(item["id"], final, page, title)
     store.prune(now() - KEEP_READ_DAYS * 86400)
-    pending = store.query("SELECT COUNT(*) AS n FROM items WHERE state = 'clean'")[0]["n"]
-    return {"added": added, "errors": errors, "pending": pending}
+    return {"added": added, "errors": errors, "pending": len(store.pending())}
 
 
 def _try_entries(source):
@@ -823,17 +892,15 @@ IMG_TAG = re.compile(r"<img\b[^>]*>", re.I)
 ATTR = re.compile(r'\b(src|alt)="([^"]*)"', re.I)
 
 
-def save_images(store, item_id, content):
-    """Downloads the images an article shows and points it at the copies.
-    Images that cannot be saved are left out, so nothing loads from outside."""
+def download_images(item_id, content):
+    """Downloads the images an article shows and points it at the copies:
+    returns the article and the images to save, as {name: bytes}. Images
+    that cannot be downloaded are left out, so nothing loads from outside."""
     tags = IMG_TAG.findall(content)[:MAX_IMAGES]
     sources = []
     for tag in tags:
         attrs = {k.lower(): v for k, v in ATTR.findall(tag)}
         sources.append(html.unescape(attrs.get("src", "")))
-    folder = store.images / str(int(item_id))
-    shutil.rmtree(folder, ignore_errors=True)
-    folder.mkdir(mode=0o700, parents=True)
 
     def download(numbered):
         number, url = numbered
@@ -844,22 +911,20 @@ def save_images(store, item_id, content):
         extension = image_type(data)
         if not extension:
             return None
-        name = f"{number}.{extension}"
-        (folder / name).write_bytes(data)
-        return f"/img/{int(item_id)}/{name}"
+        return f"{number}.{extension}", data
 
     with concurrent.futures.ThreadPoolExecutor(WORKERS) as pool:
         saved = dict(zip(tags, pool.map(download, enumerate(sources))))
 
     def replace(match):
         tag = match.group(0)
-        local = saved.get(tag)
-        if not local:
+        image = saved.get(tag)
+        if not image:
             return ""
         alt = {k.lower(): v for k, v in ATTR.findall(tag)}.get("alt", "")
-        return f'<img src="{local}" alt="{alt}" loading="lazy">'
+        return f'<img src="/img/{int(item_id)}/{image[0]}" alt="{alt}" loading="lazy">'
 
-    return IMG_TAG.sub(replace, content)
+    return IMG_TAG.sub(replace, content), dict(image for image in saved.values() if image)
 
 
 # --- opening links -----------------------------------------------------------------
@@ -1419,18 +1484,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_json(200, item)
 
     def get_pending(self, path):
-        rows = self.server.store.query(
-            "SELECT i.id, i.title, i.url, i.raw_is_page, s.site, s.platform FROM items i"
-            " JOIN sources s ON s.id = i.source_id WHERE i.state = 'clean' ORDER BY i.id"
-        )
-        self.send_json(200, {"items": [{**r, "page": bool(r.pop("raw_is_page"))} for r in rows]})
+        self.send_json(200, {"items": self.server.store.pending()})
 
     def get_raw(self, path, item_id):
-        rows = self.server.store.query("SELECT id, raw FROM items WHERE id = ? AND state = 'clean'", (item_id,))
-        if not rows:
+        raw = self.server.store.raw(item_id)
+        if raw is None:
             self.send_json(404, {"error": "Nothing to clean up"})
             return
-        self.send_json(200, {"id": item_id, "html": strip_page(rows[0]["raw"])})
+        self.send_json(200, {"id": item_id, "html": strip_page(raw)})
 
     def get_image(self, path):
         match = re.fullmatch(r"/img/(\d+)/(\d+)\.(\w+)", path)
@@ -1507,21 +1568,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def post_content(self, path, item_id):
         body = self.read_json()
         store = self.server.store
-        if not store.query("SELECT 1 FROM items WHERE id = ? AND state = 'clean'", (item_id,)):
+        if store.raw(item_id) is None:
+            done = False
+        elif isinstance(body.get("error"), str):
+            done = store.cleanup_failed(item_id, body["error"][:500])
+        else:
+            content, removed = body.get("html"), body.get("removed")
+            if not isinstance(content, str) or not isinstance(removed, dict):
+                raise ValueError("Expected {html, removed}")
+            content, images = download_images(item_id, content)
+            done = store.save_article(item_id, content, removed, images)
+        if not done:
             self.send_json(404, {"error": "Nothing to clean up"})
             return
-        if isinstance(body.get("error"), str):
-            store.run("UPDATE items SET state = 'failed', raw = NULL, error = ? WHERE id = ?", (body["error"][:500], item_id))
-            self.send_json(200, {"ok": True})
-            return
-        content, removed = body.get("html"), body.get("removed")
-        if not isinstance(content, str) or not isinstance(removed, dict):
-            raise ValueError("Expected {html, removed}")
-        content = save_images(store, item_id, content)
-        store.run(
-            "UPDATE items SET state = 'ready', raw = NULL, content = ?, removed = ?, error = NULL WHERE id = ?",
-            (content, json.dumps(removed), item_id),
-        )
         self.send_json(200, {"ok": True})
 
     def post_read(self, path, item_id):
@@ -1529,17 +1588,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         read = body.get("read")
         if not isinstance(read, bool):
             raise ValueError("Expected {read: true or false}")
-        self.server.store.run("UPDATE items SET read_at = ? WHERE id = ? AND state != 'seen'", (now() if read else None, item_id))
+        self.server.store.mark_read([item_id], read)
         self.send_json(200, {"ok": True})
 
     def post_read_all(self, path):
         ids = self.read_json().get("ids")
         if not isinstance(ids, list) or not all(isinstance(i, int) for i in ids):
             raise ValueError("Expected {ids: [numbers]}")
-        stamp = now()
-        with self.server.store.lock:
-            for item_id in ids:
-                self.server.store.run("UPDATE items SET read_at = ? WHERE id = ? AND read_at IS NULL AND state != 'seen'", (stamp, item_id))
+        self.server.store.mark_read(ids, True)
         self.send_json(200, {"ok": True})
 
     def post_open(self, path):

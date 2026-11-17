@@ -373,6 +373,25 @@ class FeedTest(unittest.TestCase):
         self.assertEqual((response.status, response.getheader("Content-Type"), data), (200, "image/png", PNG))
         self.assertEqual(self.api("GET", "/api/pending")["items"], [])
 
+    def test_removing_a_source_while_its_article_is_saved(self):
+        # The page saves articles after a sync; the source can go meanwhile.
+        self.substack()
+        self.web.pages["/a.png"] = (200, "image/png", PNG)
+        source = self.api("POST", "/api/sources", {"url": self.web.url + "/blog/"})["source"]
+        item = self.api("GET", "/api/pending")["items"][0]
+        real = server.fetch
+
+        def remove_first(url, *args, **kwargs):
+            if url.endswith("/a.png"):
+                self.api("DELETE", f"/api/sources/{source['id']}")
+            return real(url, *args, **kwargs)
+
+        server.fetch = remove_first
+        self.addCleanup(setattr, server, "fetch", real)
+        response, data = self.request("POST", f"/api/items/{item['id']}/content", {"html": f'<p>Text</p><img src="{self.web.url}/a.png">', "removed": {}})
+        self.assertEqual((response.status, json.loads(data)), (404, {"error": "Nothing to clean up"}))
+        self.assertFalse(any(self.server.store.images.iterdir()), "no images of a removed article")
+
     def test_a_cleanup_error_marks_the_article_failed(self):
         self.substack()
         self.api("POST", "/api/sources", {"url": self.web.url + "/blog/"})
@@ -400,8 +419,10 @@ class FeedTest(unittest.TestCase):
         item = self.items()[0]
         images = self.server.store.images / str(item["id"])
         self.assertTrue(images.exists())
-        self.server.store.run("UPDATE items SET read_at = ? WHERE id = ?", (int(time.time()) - 31 * 86400, item["id"]))
-        self.api("POST", "/api/sync")
+        self.api("POST", f"/api/items/{item['id']}/read", {"read": True})
+        later = server.now() + 31 * 86400
+        with mock.patch.object(server, "now", lambda: later):
+            self.api("POST", "/api/sync")
         self.assertNotIn(item["id"], [i["id"] for i in self.items()])
         self.assertFalse(images.exists())
         self.assertEqual(self.api("POST", "/api/sync")["added"], 0)
@@ -501,6 +522,50 @@ case $1 in
     echo "Feed $2 is installed." ;;
 esac
 """
+
+
+class StoreTest(unittest.TestCase):
+    """The way of an article through the store, without HTTP."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.store = server.Store(Path(tmp.name))
+        self.addCleanup(self.store.close)
+        new = server.NewSource("feed", None, "example.com", "Example", "https://example.com/", "https://example.com/feed")
+        self.source_id = self.store.add_source(new)
+
+    def article(self, content=None):
+        self.store.add_entries(self.source_id, [server.Entry("one", "One", "https://example.com/one", None, content=content)])
+        return self.store.items()[0]["id"]
+
+    def test_an_article_is_downloaded_cleaned_and_saved_with_its_images(self):
+        item_id = self.article()
+        self.assertEqual(self.store.pages_to_fetch(), [{"id": item_id, "url": "https://example.com/one", "source_kind": "feed"}])
+        self.store.page_fetched(item_id, "https://example.com/one/", "<p>Page</p>")
+        self.assertEqual(self.store.pages_to_fetch(), [])
+        self.assertEqual([(i["url"], i["page"]) for i in self.store.pending()], [("https://example.com/one/", True)])
+        self.assertEqual(self.store.raw(item_id), "<p>Page</p>")
+        self.assertTrue(self.store.save_article(item_id, "<p>Clean</p>", {"ad": 1}, {"0.png": PNG}))
+        item = self.store.item(item_id)
+        self.assertEqual((item["state"], item["content"], item["removed"]), ("ready", "<p>Clean</p>", '{"ad": 1}'))
+        self.assertEqual((self.store.images / str(item_id) / "0.png").read_bytes(), PNG)
+        self.assertEqual((self.store.raw(item_id), self.store.pending()), (None, []))
+
+    def test_a_page_that_cannot_be_downloaded_three_times_fails(self):
+        item_id = self.article()
+        for _ in range(server.MAX_ATTEMPTS):
+            self.assertEqual(len(self.store.pages_to_fetch()), 1)
+            self.store.page_failed(item_id, "HTTP 500")
+        self.assertEqual(self.store.pages_to_fetch(), [])
+        self.assertEqual((self.store.item(item_id)["state"], self.store.item(item_id)["error"]), ("failed", "HTTP 500"))
+
+    def test_nothing_is_saved_for_a_removed_source(self):
+        item_id = self.article(content=LONG)
+        self.store.delete_source(self.source_id)
+        self.assertFalse(self.store.save_article(item_id, "<p>Clean</p>", {}, {"0.png": PNG}))
+        self.assertFalse(self.store.cleanup_failed(item_id, "No article text found"))
+        self.assertEqual((self.store.items(), list(self.store.images.iterdir())), ([], []))
 
 
 class UpdateTest(unittest.TestCase):
