@@ -55,6 +55,10 @@ YOUTUBE_FEED = """<?xml version="1.0" encoding="UTF-8"?>
 </feed>"""
 
 
+# shutdown() waits for serve_forever's next look at it: half a second by default.
+POLL = {"poll_interval": 0.01}
+
+
 class Web:
     """A stand-in for the internet: path -> (status, content type, body)."""
 
@@ -82,7 +86,7 @@ class Web:
 
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        threading.Thread(target=self.server.serve_forever, kwargs=POLL, daemon=True).start()
 
     def close(self):
         self.server.shutdown()
@@ -103,7 +107,7 @@ class FeedTest(unittest.TestCase):
     def start(self, idle=0):
         self.server = server.FeedServer(0, Path(self.tmp.name) / "data", Path(self.tmp.name) / "colors.toml", idle=idle, opener=self.opened.append)
         self.port = self.server.server_address[1]
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread = threading.Thread(target=self.server.serve_forever, kwargs=POLL, daemon=True)
         self.thread.start()
         self.addCleanup(self.stop)
 
@@ -114,8 +118,8 @@ class FeedTest(unittest.TestCase):
         self.server.server_close()
         self.server.store.close()
 
-    def request(self, method, path, body=None, headers=None):
-        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+    def request(self, method, path, body=None, headers=None, timeout=10):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=timeout)
         all_headers = {"Host": f"localhost:{self.port}"}
         if method != "GET":
             all_headers["Origin"] = f"http://localhost:{self.port}"
@@ -492,7 +496,8 @@ class FeedTest(unittest.TestCase):
         threading.Thread(target=self.server.watch, daemon=True).start()
         self.api("POST", "/api/stop")
         try:
-            self.request("GET", "/api/ping")  # the open window's heartbeat
+            # The open window's heartbeat. A stopped server leaves it waiting.
+            self.request("GET", "/api/ping", timeout=0.5)
         except OSError:
             pass
         self.thread.join(5)
@@ -595,7 +600,7 @@ class UpdateTest(unittest.TestCase):
         self.updater = server.Updater(self.script, self.log)
         self.server = server.FeedServer(0, self.dir / "data", self.dir / "colors.toml", idle=0, updater=self.updater)
         self.port = self.server.server_address[1]
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        threading.Thread(target=self.server.serve_forever, kwargs=POLL, daemon=True).start()
         self.addCleanup(self.stop)
 
     def stop(self):
@@ -745,7 +750,7 @@ class UpdateTest(unittest.TestCase):
         self.addCleanup(plain.store.close)
         self.addCleanup(plain.server_close)
         self.addCleanup(plain.shutdown)
-        threading.Thread(target=plain.serve_forever, daemon=True).start()
+        threading.Thread(target=plain.serve_forever, kwargs=POLL, daemon=True).start()
         self.port = plain.server_address[1]
         self.assertEqual(self.request("GET")[0], 404)
         self.assertEqual(self.request("POST", {"action": "check"})[0], 404)
