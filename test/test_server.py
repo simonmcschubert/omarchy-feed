@@ -552,9 +552,10 @@ class FeedTest(unittest.TestCase):
 
 
 # Stands in for the update script. Files next to it decide what it does:
-# check.out is what check prints; check.fail, download.fail and install.fail
-# make those fail the way the script does. It logs its calls to calls, and
-# install writes where its output goes and its session to install.env.
+# check.out is what check prints; channel holds the channel; check.fail,
+# download.fail, install.fail and channel.fail make those fail the way the
+# script does. It logs its calls to calls, and install writes where its
+# output goes and its session to install.env.
 FAKE_UPDATE = """#!/bin/bash
 dir=$(dirname "$0")
 echo "$*" >> "$dir/calls"
@@ -571,6 +572,13 @@ case $1 in
     [[ ! -e $dir/install.fail ]] || { echo "fatal: git said" >&2; echo "update: can't update to $2: /app has local changes" >&2; exit 1; }
     echo current > "$dir/check.out"
     echo "Feed $2 is installed." ;;
+  channel)
+    if [[ -n $2 ]]; then
+      [[ ! -e $dir/channel.fail ]] || { echo "update: /app is not a git checkout, so there is nothing to update from" >&2; exit 1; }
+      echo "$2" > "$dir/channel"
+    else
+      cat "$dir/channel" 2>/dev/null || echo stable
+    fi ;;
 esac
 """
 
@@ -660,8 +668,8 @@ class UpdateTest(unittest.TestCase):
         conn.close()
         return response.status, json.loads(data)
 
-    def act(self, action):
-        status, body = self.request("POST", {"action": action})
+    def act(self, action, **fields):
+        status, body = self.request("POST", {"action": action, **fields})
         self.assertEqual(status, 200, body)
         return body
 
@@ -678,9 +686,10 @@ class UpdateTest(unittest.TestCase):
         status, body = self.request("GET")
         self.assertEqual(status, 200)
         self.assertEqual(body["installed"], "0.1.0")
+        self.assertEqual(body["channel"], "stable")
         self.assertEqual((body["status"], body["version"], body["checking"]), ("", "", False))
         self.assertRegex(body["boot"], r"^[0-9a-f]{16}$")
-        self.assertEqual(self.calls(), ["version"], "no check before the timer or the button asks")
+        self.assertEqual(self.calls(), ["version", "channel"], "no check before the timer or the button asks")
 
     def test_check_download_and_install(self):
         body = self.act("check")
@@ -698,7 +707,7 @@ class UpdateTest(unittest.TestCase):
         # Still here after a successful install: the script stopped no server
         # here. It checks again.
         self.assertEqual(self.settled()["status"], "")
-        self.assertEqual(self.calls(), ["version", "check", "check", "download 0.2.0", "install 0.2.0", "check"])
+        self.assertEqual(self.calls(), ["version", "channel", "channel", "check", "channel", "check", "download 0.2.0", "install 0.2.0", "channel", "check"])
 
     def test_the_install_runs_in_a_session_of_its_own_and_writes_to_its_log(self):
         # It stops this server, so it must not end with it: not in its
@@ -769,13 +778,65 @@ class UpdateTest(unittest.TestCase):
         self.assertEqual(status, 403)
         status, _ = self.request("POST", {"action": "check"}, {"Content-Type": "text/plain"})
         self.assertEqual(status, 400)
-        status, _ = self.request("POST", {"action": "reboot"})
-        self.assertEqual(status, 400)
+        for body in [{"action": "reboot"}, {"action": "channel"}, {"action": "channel", "channel": "beta"}]:
+            status, _ = self.request("POST", body)
+            self.assertEqual(status, 400, body)
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
         conn.request("POST", "/api/update", body=b"null", headers={"Host": f"localhost:{self.port}", "Origin": f"http://localhost:{self.port}", "Content-Type": "application/json"})
         self.assertEqual(conn.getresponse().status, 400, "JSON null is JSON, and still no request")
         conn.close()
-        self.assertEqual(self.calls(), ["version"])
+        self.assertEqual(self.calls(), ["version", "channel"])
+
+    def test_switching_the_channel_checks_it(self):
+        self.offer("available 0.2.0")
+        self.act("check")
+        preview = "1a2b3c4d" * 5
+        self.offer(f"available {preview}")
+        body = self.act("channel", channel="preview")
+        self.assertEqual((body["channel"], body["status"], body["version"], body["checkError"]), ("preview", "available", preview, ""))
+        self.assertEqual(self.calls()[-3:], ["channel preview", "channel", "check"])
+        self.assertEqual(self.request("GET")[1]["channel"], "preview")
+
+        # The next server, when Feed opens again, reads it back.
+        self.assertEqual(server.Updater(self.script, self.log).channel, "preview")
+
+    def test_a_check_reads_a_channel_changed_in_a_terminal(self):
+        (self.dir / "channel").write_text("preview\n")  # update channel preview
+        self.offer("")
+        self.assertEqual(self.act("check")["channel"], "preview")
+
+    def test_switching_the_channel_forgets_what_the_other_one_found(self):
+        self.offer("available 0.2.0")
+        self.act("check")
+        (self.dir / "check.fail").touch()
+        body = self.act("channel", channel="preview")
+        self.assertEqual(body["checkError"], "can't reach origin")
+        self.assertEqual((body["channel"], body["status"], body["version"]), ("preview", "", ""))
+
+    def test_switching_the_channel_clears_a_failed_update(self):
+        self.offer("available 0.2.0")
+        self.act("check")
+        (self.dir / "download.fail").touch()
+        self.assertEqual(self.act("download")["status"], "failed")
+        self.offer("current")
+        body = self.act("channel", channel="preview")
+        self.assertEqual((body["status"], body["error"], body["checkError"]), ("", "", ""))
+
+    def test_the_channel_stays_while_feed_updates(self):
+        with self.updater.lock:
+            self.updater.status = "installing"
+        status, body = self.request("POST", {"action": "channel", "channel": "preview"})
+        self.assertEqual(status, 409)
+        self.assertEqual(body["error"], "can't change the channel while Feed updates; try again when it is done")
+        self.assertEqual(self.request("GET")[1]["channel"], "stable")
+        self.assertNotIn("channel preview", self.calls())
+
+    def test_a_failed_channel_change_says_why(self):
+        (self.dir / "channel.fail").touch()
+        status, body = self.request("POST", {"action": "channel", "channel": "preview"})
+        self.assertEqual(status, 409)
+        self.assertEqual(body["error"], "/app is not a git checkout, so there is nothing to update from")
+        self.assertEqual(self.request("GET")[1]["channel"], "stable")
 
     def test_no_updates_without_an_updater(self):
         plain = server.FeedServer(0, self.dir / "data2", self.dir / "colors.toml", idle=0)

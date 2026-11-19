@@ -22,7 +22,7 @@ const state = {
 
 const $ = (id) => document.getElementById(id);
 const main = $('main');
-let updates = null; // the update button (update.mjs)
+let updates = null; // the update button and the channel in Settings (update.mjs)
 
 // --- server -------------------------------------------------------------------------
 
@@ -430,13 +430,15 @@ function renderSettings() {
     form,
     h('p', { class: 'muted small' }, 'A new source starts with its three newest items. Videos open in the YouTube app; articles are saved with their images and read here, without ads.'),
     h('h2', { id: 'reader-style' }, 'Reader'),
-    h('div', { class: 'reader-styles', role: 'radiogroup', 'aria-labelledby': 'reader-style' },
+    h('div', { class: 'choices reader-styles', role: 'radiogroup', 'aria-labelledby': 'reader-style' },
       READER_STYLES.map(([value, name, about]) => h('label', {},
         h('input', { type: 'radio', name: 'reader-style', value, checked: value === state.readerStyle, onchange: () => setReaderStyle(value) }),
         h('span', { class: `name ${value}` }, name),
         h('span', { class: 'meta' }, about)))),
     h('h2', {}, 'Data'),
     h('p', {}, 'Saved in ', h('code', {}, state.dataDir), `. Read items are deleted ${state.keepReadDays} days after they were marked read.`),
+    h('h2', {}, 'Updates'),
+    updates.channelSettings(),
     h('h2', {}, 'Keys'),
     h('table', { class: 'keys' }, KEYS.map(([key, what]) => h('tr', {}, h('td', {}, h('kbd', {}, key)), h('td', {}, what)))),
   ));
@@ -496,7 +498,7 @@ addEventListener('keydown', (event) => {
     show(event.key === '1' ? 'feed' : 'settings');
     return;
   }
-  // Keys typed into a field stay there; a radio (Settings > Reader) has no use for them.
+  // Keys typed into a field stay there; a radio (Settings > Reader, Updates) has no use for them.
   if (event.ctrlKey || event.altKey || event.metaKey || event.target.closest('input:not([type="radio"]), select, textarea')) return;
   const key = event.key;
   if (key === 'r') return void sync();

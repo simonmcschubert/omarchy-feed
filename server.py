@@ -6,8 +6,8 @@ when the window closes (or after IDLE_SECONDS without a request). It syncs
 only when the page asks: on opening and with the Sync button.
 
 Listens on 127.0.0.1 only. Data: ~/.local/state/omarchy-feed/ (feed.db and
-the images of saved articles), in a directory only the owner can open. New
-releases come from the update script next to this file.
+the images of saved articles), in a directory only the owner can open.
+Updates come from the update script next to this file.
 
 Python standard library only (3.11 or newer).
 """
@@ -62,9 +62,11 @@ MAX_PAGE = 8 * 1024 * 1024
 MAX_IMAGE = 8 * 1024 * 1024
 MAX_IMAGES = 60
 MAX_BODY = 20 * 1024 * 1024
-# Seconds: the first check for a release after the server starts, and then.
+# Seconds: the first check for an update after the server starts, and then.
 FIRST_CHECK = 15
 CHECK_EVERY = 4 * 60 * 60
+# Which updates Feed offers: releases, or previews of main (update script).
+CHANNELS = ("stable", "preview")
 
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
 IMAGE_TYPES = {
@@ -1213,11 +1215,12 @@ def reason(output):
 
 
 class Updater:
-    """Offers new releases of Feed the way a desktop app offers its updates:
-    it checks shortly after the server starts, every four hours while Feed is
-    open, and when the update button asks; it downloads a release when asked,
-    and installs it with a restart of the server. The update script does the
-    work; the page shows the state (app/update.mjs)."""
+    """Offers updates of Feed the way a desktop app offers them: it checks
+    shortly after the server starts, every four hours while Feed is open, and
+    when the update button asks; it downloads an update when asked, and
+    installs it with a restart of the server. An update is a release, or on
+    the preview channel the newest preview. The update script does the work;
+    the page shows the state (app/update.mjs)."""
 
     def __init__(self, script, log):
         self.script = Path(script)
@@ -1230,12 +1233,16 @@ class Updater:
         # git checkout). Otherwise available, downloading, downloaded,
         # installing, or failed (download or install; error says why).
         self.status = ""
+        # What status is about: a release X.Y.Z, or a preview's commit id.
         self.version = ""
         self.error = ""
         self.checking = False
         ok, out, _ = self.run("version")
         # The installed release: "" before the first or without a checkout.
         self.installed = out.strip() if ok else ""
+        ok, out, _ = self.run("channel")
+        # stable or preview; "" without a checkout.
+        self.channel = out.strip() if ok else ""
 
     def run(self, *args, timeout=60):
         """(ok, stdout, reason) of a run of the update script."""
@@ -1258,6 +1265,7 @@ class Updater:
                 "version": self.version,
                 "error": self.error,
                 "installed": self.installed,
+                "channel": self.channel,
                 "checking": self.checking,
                 "boot": self.boot,
             }
@@ -1272,9 +1280,9 @@ class Updater:
         threading.Thread(target=checks, daemon=True).start()
 
     def check(self, asked=False):
-        """Looks for a newer release. Returns why the check failed, or "".
+        """Looks for a newer update. Returns why the check failed, or "".
         A check on the timer keeps what an earlier one found when it fails
-        (offline is no reason to hide a release), and leaves a failed update
+        (offline is no reason to hide an update), and leaves a failed update
         on show until the button is clicked."""
         with self.lock:
             if self.status == "installing" or (self.status == "failed" and not asked):
@@ -1282,6 +1290,11 @@ class Updater:
         with self.work:
             with self.lock:
                 self.checking = True
+            # `update channel` in a terminal changes it while Feed is open.
+            ok, out, _ = self.run("channel")
+            if ok:
+                with self.lock:
+                    self.channel = out.strip()
             ok, out, why = self.run("check")
             with self.lock:
                 self.checking = False
@@ -1296,6 +1309,27 @@ class Updater:
                 else:
                     self.status, self.version = "", ""
                 self.error = ""
+        return ""
+
+    def set_channel(self, channel):
+        """Offers releases (stable) or previews from now on. Returns why it
+        can't, or "". Check next: what was found before is forgotten."""
+        busy = "can't change the channel while Feed updates; try again when it is done"
+        with self.lock:
+            if self.status in ("downloading", "installing"):
+                return busy  # without waiting for the install to end
+        with self.work:
+            with self.lock:
+                if self.status in ("downloading", "installing"):
+                    return busy
+            ok, _, why = self.run("channel", channel)
+            if not ok:
+                return why
+            with self.lock:
+                self.channel = channel
+                # A download clicked meanwhile finishes for the channel before.
+                if self.status not in ("downloading", "installing"):
+                    self.status, self.version, self.error = "", "", ""
         return ""
 
     def download(self):
@@ -1584,7 +1618,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if updater is None:
             self.send_json(404, {"error": "Not found"})
             return
-        action = self.read_json().get("action")
+        body = self.read_json()
+        action = body.get("action")
         if action == "check":
             why = updater.check(asked=True)
             self.send_json(200, {**updater.snapshot(), "checkError": why})
@@ -1594,8 +1629,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif action == "install":
             updater.install()
             self.send_json(200, updater.snapshot())
+        elif action == "channel" and body.get("channel") in CHANNELS:
+            why = updater.set_channel(body["channel"])
+            if why:
+                self.send_json(409, {"error": why})
+                return
+            why = updater.check(asked=True)
+            self.send_json(200, {**updater.snapshot(), "checkError": why})
         else:
-            raise ValueError("Expected {action: check, download or install}")
+            raise ValueError(f"Expected {{action: check, download, install, or channel with channel: {' or '.join(CHANNELS)}}}")
 
     def post_sync(self, path):
         if not self.server.sync_lock.acquire(blocking=False):
