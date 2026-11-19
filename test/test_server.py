@@ -177,6 +177,16 @@ class FeedTest(unittest.TestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual(data, started)
 
+    def test_serves_every_font_the_stylesheet_names(self):
+        css = (server.APP_DIR / "style.css").read_text()
+        fonts = re.findall(r'url\("(/fonts/[^"]+)"\)', css)
+        self.assertEqual(len(fonts), 6)
+        for path in fonts:
+            response, data = self.request("GET", path)
+            self.assertEqual(response.status, 200, path)
+            self.assertEqual(response.getheader("Content-Type"), "font/woff2")
+            self.assertEqual(data, (server.APP_DIR / path.lstrip("/")).read_bytes())
+
     def test_refuses_other_hosts_and_writes_from_other_sites(self):
         response, _ = self.request("GET", "/api/state", headers={"Host": "evil.example"})
         self.assertEqual(response.status, 403)
@@ -518,6 +528,27 @@ class FeedTest(unittest.TestCase):
         css = data.decode()
         self.assertIn("--accent: #123456;", css)
         self.assertIn("color-scheme: light;", css)
+        self.assertIn("--text-weight: 400;", css)
+
+    def test_dark_themes_set_text_a_little_lighter(self):
+        response, data = self.request("GET", "/theme.css")  # no theme file: Tokyo Night
+        css = data.decode()
+        self.assertIn("color-scheme: dark;", css)
+        self.assertIn("--text-weight: 370;", css)
+
+    def test_the_reader_style_is_editorial_until_settings_change_it(self):
+        self.assertEqual(self.api("GET", "/api/state")["readerStyle"], "editorial")
+        self.api("POST", "/api/settings", {"readerStyle": "book"})
+        self.assertEqual(self.api("GET", "/api/state")["readerStyle"], "book")
+        self.stop()
+        self.start()
+        self.assertEqual(self.api("GET", "/api/state")["readerStyle"], "book")
+
+    def test_only_known_reader_styles_are_kept(self):
+        for value in ("comic", None, 3):
+            error = self.api("POST", "/api/settings", {"readerStyle": value}, status=400)["error"]
+            self.assertIn("editorial, modern, book, system", error)
+        self.assertEqual(self.api("GET", "/api/state")["readerStyle"], "editorial")
 
 
 # Stands in for the update script. Files next to it decide what it does:

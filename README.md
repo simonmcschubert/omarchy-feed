@@ -78,8 +78,13 @@ The data directory stays.
   "Removed: 5 ads, 1 poll"). **Open original** opens the article in the
   browser. Links open in the browser too; links to X (`x.com`) open in
   Omarchy's X app.
-- **Settings**: add a source by its address, remove one, and see where the
-  data is.
+- **Settings**: add a source by its address, remove one, pick how the
+  reader sets articles, and see where the data is. **Reader** has four
+  styles: Editorial serif (Source Serif text with Inter headings, the
+  default), Modern sans (Inter), Book serif (Literata) and System sans
+  (Noto Sans). Feed brings the first three fonts with it. On dark themes
+  their text is set a little lighter, because light text on a dark
+  background looks bolder.
 
 Videos open in Omarchy's YouTube app, and links to X in its X app. When the
 app is open, Feed switches to it and the link takes the place of what it
@@ -174,7 +179,8 @@ app/
 ├── app.mjs        # Feed, Reader and Settings; the sync loop
 ├── clean.mjs      # article cleanup and the rules per source (no network)
 ├── update.mjs     # the update button
-└── style.css
+├── style.css      # including the reader's four styles
+└── fonts/         # Source Serif 4, Inter, Literata (Latin, OFL)
 ```
 
 Run it without installing, with its own data and without stopping by itself:

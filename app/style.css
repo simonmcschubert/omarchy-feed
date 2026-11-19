@@ -15,7 +15,6 @@
   --yellow: #e0af68;
   color-scheme: dark;
   --mono: "JetBrainsMono Nerd Font", "JetBrains Mono", ui-monospace, monospace;
-  --text: "iA Writer Quattro S", "iA Writer Quattro V", "Noto Sans", system-ui, sans-serif;
 }
 
 * {
@@ -343,132 +342,308 @@ main {
 
 /* Reader */
 
-.reader-bar {
-  max-width: 720px;
+/* Settings > Reader picks one of four styles, and app.mjs puts it on <html>
+   as data-reader. Editorial, the default, is set on :root; the others change
+   its variables and a few rules at the end. The fonts are variable, so on
+   dark themes text is set at --text-weight 370 (from theme.css), where light
+   text on a dark background would otherwise look bold. */
+
+@font-face {
+  font-family: "Source Serif 4";
+  src: url("/fonts/source-serif-4.woff2") format("woff2");
+  font-weight: 200 900;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "Source Serif 4";
+  src: url("/fonts/source-serif-4-italic.woff2") format("woff2");
+  font-weight: 200 900;
+  font-style: italic;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "Inter";
+  src: url("/fonts/inter.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "Inter";
+  src: url("/fonts/inter-italic.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: italic;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "Literata";
+  src: url("/fonts/literata.woff2") format("woff2");
+  font-weight: 200 900;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "Literata";
+  src: url("/fonts/literata-italic.woff2") format("woff2");
+  font-weight: 200 900;
+  font-style: italic;
+  font-display: block;
+}
+
+:root {
+  --serif: "Source Serif 4", "Noto Serif", Georgia, serif;
+  --sans: "Inter", "Noto Sans", system-ui, sans-serif;
+  --book: "Literata", "Noto Serif", Georgia, serif;
+  --system-sans: "Noto Sans", system-ui, sans-serif;
+  --fg-soft: color-mix(in oklab, var(--fg) 55%, var(--fg-muted));
+  --text-weight: 400;
+
+  /* Editorial: Source Serif text, Inter for the title, headings and labels. */
+  --reader-text: var(--serif);
+  --reader-size: 20px;
+  --reader-leading: 1.6;
+  --reader-weight: var(--text-weight);
+  --reader-tracking: -0.003em;
+  --reader-gap: 1.3em;
+  --reader-title: 700 38px/1.18 var(--sans);
+  --reader-title-tracking: -0.022em;
+  --reader-h2: 700 25px/1.28 var(--sans);
+  --reader-h3: 650 20px/1.35 var(--sans);
+  --reader-head-tracking: -0.016em;
+  --reader-label: 600 13px/1.4 var(--sans);
+  --reader-label-tracking: 0.08em;
+  --reader-meta: 14px/1.5 var(--sans);
+  --reader-link: inherit;
+}
+
+/* Modern: Inter throughout. */
+:root[data-reader="modern"] {
+  --reader-text: var(--sans);
+  --reader-size: 17px;
+  --reader-leading: 1.7;
+  --reader-tracking: -0.011em;
+  --reader-gap: 1.25em;
+  --reader-title: 700 36px/1.15 var(--sans);
+  --reader-title-tracking: -0.025em;
+  --reader-h2: 650 22px/1.3 var(--sans);
+  --reader-h3: 600 18px/1.35 var(--sans);
+  --reader-head-tracking: -0.015em;
+  --reader-label: 600 12px/1.4 var(--sans);
+  --reader-label-tracking: 0.09em;
+  --reader-link: var(--accent);
+}
+
+/* Book: Literata throughout. */
+:root[data-reader="book"] {
+  --reader-text: var(--book);
+  --reader-size: 19px;
+  --reader-leading: 1.65;
+  --reader-tracking: 0;
+  --reader-gap: 1.25em;
+  --reader-title: 600 40px/1.15 var(--book);
+  --reader-title-tracking: -0.01em;
+  --reader-h2: 600 25px/1.3 var(--book);
+  --reader-h3: italic 600 21px/1.35 var(--book);
+  --reader-head-tracking: -0.005em;
+  --reader-label: 600 16px/1.4 var(--book);
+  --reader-label-tracking: 0.1em;
+  --reader-meta: italic 16px/1.5 var(--book);
+}
+
+/* System: Noto Sans, which Omarchy has; no bundled font. */
+:root[data-reader="system"] {
+  --reader-text: var(--system-sans);
+  --reader-size: 17px;
+  --reader-leading: 1.7;
+  --reader-weight: 400;
+  --reader-tracking: 0;
+  --reader-gap: 1.15em;
+  --reader-title: 600 32px/1.22 var(--system-sans);
+  --reader-title-tracking: -0.015em;
+  --reader-h2: 600 21px/1.3 var(--system-sans);
+  --reader-h3: 600 18px/1.3 var(--system-sans);
+  --reader-head-tracking: -0.01em;
+  --reader-label: 600 12.5px/1.4 var(--system-sans);
+  --reader-label-tracking: 0.07em;
+  --reader-meta: 13px/1.5 var(--system-sans);
+  --reader-link: var(--accent);
+}
+
+.reader-bar,
+.reader {
+  max-width: 680px;
   margin: 0 auto;
 }
 
 .reader {
-  max-width: 720px;
-  margin: 0 auto;
-  padding: 8px 0 60px;
-  font: 18px/1.7 var(--text);
+  padding: 24px 0 80px;
   color: var(--fg);
 }
 
-.reader .meta {
-  margin: 12px 0 6px;
-  font: 13px/1.5 var(--mono);
-  color: var(--fg-muted);
+.reader h1 {
+  font: var(--reader-title);
+  letter-spacing: var(--reader-title-tracking);
+  text-wrap: balance;
 }
 
-.reader h1 {
-  font-size: 30px;
-  line-height: 1.25;
-  margin: 0 0 8px;
+.reader .meta {
+  margin: 14px 0 0;
+  font: var(--reader-meta);
+  color: var(--fg-soft);
 }
 
 .reader .removed {
-  margin: 0 0 28px;
-  font: 12px/1.5 var(--mono);
+  margin: 2px 0 0;
+  font: var(--reader-meta);
+  font-size: 13px;
+  font-style: normal;
   color: var(--fg-muted);
 }
 
-.content h1,
-.content h2,
-.content h3,
-.content h4,
-.content h5,
-.content h6 {
-  color: var(--fg-strong);
-  line-height: 1.3;
-  margin: 1.6em 0 0.5em;
+.reader .content,
+.reader .notice {
+  margin: 40px 0 0;
 }
 
-.content h1,
-.content h2 {
-  font-size: 23px;
+.content {
+  font-family: var(--reader-text);
+  font-size: var(--reader-size);
+  line-height: var(--reader-leading);
+  font-weight: var(--reader-weight);
+  letter-spacing: var(--reader-tracking);
+  overflow-wrap: break-word;
+}
+
+.content :is(p, ul, ol, dl, blockquote, pre, figure, table) {
+  margin: 0 0 var(--reader-gap);
+}
+
+.content :is(h1, h2, h3) {
+  margin: 1.9em 0 0.45em;
+  color: var(--fg-strong);
+  letter-spacing: var(--reader-head-tracking);
+  text-wrap: balance;
+}
+
+.content :is(h1, h2) {
+  font: var(--reader-h2);
 }
 
 .content h3 {
-  font-size: 20px;
+  margin: 1.7em 0 0.4em;
+  font: var(--reader-h3);
 }
 
-.content h4,
-.content h5,
-.content h6 {
-  font-size: 15px;
-  letter-spacing: 0.04em;
-  color: var(--fg-muted);
+/* Newsletters use h4 to h6 as section labels ("TODAY IN AI"). */
+.content :is(h4, h5, h6) {
+  margin: 3em 0 0.9em;
+  font: var(--reader-label);
+  letter-spacing: var(--reader-label-tracking);
+  color: var(--fg-soft);
 }
 
-.content p,
-.content ul,
-.content ol,
-.content blockquote,
-.content pre,
-.content figure,
-.content table {
-  margin: 0 0 1.1em;
+.content :is(h4, h5, h6) + :is(h1, h2, h3) {
+  margin-top: 0;
+}
+
+.content :is(strong, b) {
+  font-weight: 600;
+  color: var(--fg-strong);
+}
+
+.content :is(ul, ol) {
+  padding-left: 1.4em;
 }
 
 .content li {
-  margin: 0.3em 0;
+  margin: 0.45em 0;
+  padding-left: 0.2em;
+}
+
+.content li::marker {
+  color: var(--fg-muted);
+}
+
+.content a {
+  color: var(--reader-link);
+  text-decoration-thickness: 1px;
+  text-decoration-color: var(--fg-muted);
+  text-underline-offset: 0.2em;
+}
+
+.content a:hover {
+  color: var(--accent);
+  text-decoration-color: currentColor;
+}
+
+.content blockquote {
+  margin-left: 0;
+  margin-right: 0;
+  padding-left: 1.1em;
+  border-left: 2px solid var(--fg-muted);
+  font-style: italic;
+}
+
+.content blockquote > :last-child {
+  margin-bottom: 0;
 }
 
 .content img {
   display: block;
   max-width: 100%;
   height: auto;
-  margin: 1.2em auto;
-  border-radius: 6px;
+  margin: 2em auto;
+  border-radius: 4px;
 }
 
 .content figure {
-  margin-left: 0;
-  margin-right: 0;
+  margin: 2em 0;
+}
+
+.content figure img {
+  margin: 0 auto;
 }
 
 .content figcaption {
-  font-size: 14px;
-  color: var(--fg-muted);
+  margin-top: 0.8em;
+  font: var(--reader-meta);
+  color: var(--fg-soft);
   text-align: center;
 }
 
-.content blockquote {
-  margin-left: 0;
-  padding-left: 18px;
-  border-left: 3px solid var(--border);
-  color: var(--fg);
+/* Code keeps the terminal font at its own weight and spacing. */
+.content :is(code, pre) {
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+.content code {
+  font-size: 0.8em;
+  padding: 0.15em 0.35em;
 }
 
 .content pre {
-  padding: 12px 14px;
+  margin: 1.6em 0;
+  padding: 16px 18px;
   background: var(--sunken);
   border-radius: 6px;
   overflow-x: auto;
-  font: 14px/1.5 var(--mono);
+  font: 14px/1.6 var(--mono);
   white-space: pre-wrap;
 }
 
 .content pre code {
   padding: 0;
   background: none;
-}
-
-.content code {
-  font-size: 0.85em;
-}
-
-.content hr {
-  border: none;
-  border-top: 1px solid var(--border);
-  margin: 2em 0;
+  font-size: inherit;
 }
 
 .content table {
   border-collapse: collapse;
-  font-size: 15px;
+  font-size: 0.8em;
 }
 
 .content th,
@@ -477,9 +652,64 @@ main {
   padding: 4px 8px;
 }
 
-.content a {
-  text-decoration-color: var(--fg-muted);
-  text-underline-offset: 3px;
+.content th {
+  font-weight: 600;
+}
+
+/* A section break: three spaced dots. */
+.content hr {
+  margin: 2.4em 0;
+  border: 0;
+  text-align: center;
+}
+
+.content hr::before {
+  content: "\00B7\00B7\00B7";
+  padding-left: 0.8em;
+  letter-spacing: 0.8em;
+  font: 22px/1 var(--serif);
+  color: var(--fg-muted);
+}
+
+/* Modern and System: upright quotes with a colored rule, a line for breaks. */
+:root:is([data-reader="modern"], [data-reader="system"]) .content blockquote {
+  border-left-color: var(--accent);
+  font-style: normal;
+}
+
+:root[data-reader="system"] .content blockquote {
+  border-left-color: var(--border);
+}
+
+:root:is([data-reader="modern"], [data-reader="system"]) .content hr {
+  margin: 2.2em 0;
+  border-top: 1px solid var(--border);
+}
+
+:root:is([data-reader="modern"], [data-reader="system"]) .content hr::before {
+  content: none;
+}
+
+/* Book: small-caps labels, an indented quote, a short rule for breaks. */
+:root[data-reader="book"] .content :is(h4, h5, h6) {
+  font-variant-caps: all-small-caps;
+}
+
+:root[data-reader="book"] .content blockquote {
+  margin: 1.6em;
+  padding-left: 0;
+  border-left: 0;
+}
+
+:root[data-reader="book"] .content hr {
+  width: 64px;
+  height: 1px;
+  margin: 2.6em auto;
+  background: var(--fg-muted);
+}
+
+:root[data-reader="book"] .content hr::before {
+  content: none;
 }
 
 .notice {
@@ -541,4 +771,54 @@ main {
 
 .keys td {
   padding: 3px 16px 3px 0;
+}
+
+/* Settings > Reader: each style's name in its own typeface. */
+.reader-styles {
+  margin: 0 0 12px;
+}
+
+.reader-styles label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--selection);
+  cursor: pointer;
+}
+
+.reader-styles input {
+  flex: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  accent-color: var(--accent);
+}
+
+.reader-styles .name {
+  min-width: 9em;
+  font-size: 17px;
+  color: var(--fg-strong);
+}
+
+.reader-styles .name.editorial {
+  font-family: var(--serif);
+}
+
+.reader-styles .name.modern {
+  font-family: var(--sans);
+}
+
+.reader-styles .name.book {
+  font-family: var(--book);
+}
+
+.reader-styles .name.system {
+  font-family: var(--system-sans);
+}
+
+.reader-styles .meta {
+  font-size: 13px;
+  color: var(--fg-muted);
 }
