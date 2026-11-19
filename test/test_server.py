@@ -707,7 +707,7 @@ class UpdateTest(unittest.TestCase):
         # Still here after a successful install: the script stopped no server
         # here. It checks again.
         self.assertEqual(self.settled()["status"], "")
-        self.assertEqual(self.calls(), ["version", "channel", "check", "check", "download 0.2.0", "install 0.2.0", "check"])
+        self.assertEqual(self.calls(), ["version", "channel", "channel", "check", "channel", "check", "download 0.2.0", "install 0.2.0", "channel", "check"])
 
     def test_the_install_runs_in_a_session_of_its_own_and_writes_to_its_log(self):
         # It stops this server, so it must not end with it: not in its
@@ -794,11 +794,16 @@ class UpdateTest(unittest.TestCase):
         self.offer(f"available {preview}")
         body = self.act("channel", channel="preview")
         self.assertEqual((body["channel"], body["status"], body["version"], body["checkError"]), ("preview", "available", preview, ""))
-        self.assertEqual(self.calls()[-2:], ["channel preview", "check"])
+        self.assertEqual(self.calls()[-3:], ["channel preview", "channel", "check"])
         self.assertEqual(self.request("GET")[1]["channel"], "preview")
 
         # The next server, when Feed opens again, reads it back.
         self.assertEqual(server.Updater(self.script, self.log).channel, "preview")
+
+    def test_a_check_reads_a_channel_changed_in_a_terminal(self):
+        (self.dir / "channel").write_text("preview\n")  # update channel preview
+        self.offer("")
+        self.assertEqual(self.act("check")["channel"], "preview")
 
     def test_switching_the_channel_forgets_what_the_other_one_found(self):
         self.offer("available 0.2.0")

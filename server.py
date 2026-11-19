@@ -1290,6 +1290,11 @@ class Updater:
         with self.work:
             with self.lock:
                 self.checking = True
+            # `update channel` in a terminal changes it while Feed is open.
+            ok, out, _ = self.run("channel")
+            if ok:
+                with self.lock:
+                    self.channel = out.strip()
             ok, out, why = self.run("check")
             with self.lock:
                 self.checking = False
