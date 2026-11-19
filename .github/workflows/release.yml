@@ -74,7 +74,10 @@ jobs:
             exit 1
           }
 
-          passed=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$CI_WORKFLOW/runs?head_sha=$GITHUB_SHA&status=success" --jq .total_count)
+          # Reads each run's own result. GitHub's status filter
+          # (runs?status=success) once listed a finished run as in progress
+          # for over an hour, and refused the release meanwhile.
+          passed=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$CI_WORKFLOW/runs?head_sha=$GITHUB_SHA&per_page=100" --jq '[.workflow_runs[] | select(.conclusion == "success")] | length')
           [ "$passed" != 0 ] || fail "CI has not passed for $GITHUB_SHA. Wait for CI on main to finish, then start the release again."
 
           # The tags hold the version: the newest release without a suffix,
