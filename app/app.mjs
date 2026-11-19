@@ -8,7 +8,7 @@ const state = {
   items: [],
   dataDir: '',
   keepReadDays: 30,
-  readerStyle: 'editorial', // Settings > Reader: one of READER_STYLES
+  readerStyle: null, // Settings > Reader: one of READER_STYLES
   view: 'feed', // feed | reader | settings
   show: 'unread', // unread | all
   source: 0, // 0: all sources
@@ -50,8 +50,11 @@ async function load() {
   state.items = data.items;
   state.dataDir = data.dataDir;
   state.keepReadDays = data.keepReadDays;
-  state.readerStyle = data.readerStyle;
-  applyReaderStyle();
+  // Only this page changes the style, so the server's copy is read once.
+  if (!state.readerStyle) {
+    state.readerStyle = savedStyle = data.readerStyle;
+    applyReaderStyle();
+  }
   if (state.source && !state.sources.some((s) => s.id === state.source)) state.source = 0;
 }
 
@@ -225,18 +228,25 @@ function applyReaderStyle() {
   document.documentElement.dataset.reader = state.readerStyle;
 }
 
-async function setReaderStyle(style) {
-  const before = state.readerStyle;
+// Saves one choice at a time, in the order they were made. A failed save
+// goes back to the last saved style, unless a newer choice follows it.
+let savedStyle = null;
+let saving = Promise.resolve();
+function setReaderStyle(style) {
   state.readerStyle = style;
   applyReaderStyle();
-  try {
-    await api('POST', '/api/settings', { readerStyle: style });
-  } catch (error) {
-    state.readerStyle = before;
-    applyReaderStyle();
-    toast(error.message);
-    render();
-  }
+  saving = saving.then(async () => {
+    try {
+      await api('POST', '/api/settings', { readerStyle: style });
+      savedStyle = style;
+    } catch (error) {
+      if (state.readerStyle !== style) return;
+      state.readerStyle = savedStyle;
+      applyReaderStyle();
+      toast(error.message);
+      render();
+    }
+  });
 }
 
 function show(view) {
