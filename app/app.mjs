@@ -496,7 +496,8 @@ addEventListener('keydown', (event) => {
     show(event.key === '1' ? 'feed' : 'settings');
     return;
   }
-  if (event.ctrlKey || event.altKey || event.metaKey || event.target.closest('input, select, textarea')) return;
+  // Keys typed into a field stay there; a radio (Settings > Reader) has no use for them.
+  if (event.ctrlKey || event.altKey || event.metaKey || event.target.closest('input:not([type="radio"]), select, textarea')) return;
   const key = event.key;
   if (key === 'r') return void sync();
   if (state.view === 'feed') {
