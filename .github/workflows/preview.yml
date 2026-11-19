@@ -5,7 +5,9 @@
 #
 # Only fast-forwards: the CI run of an older commit that ends after a newer
 # one leaves preview where it is, and preview is never rewritten. Runs no
-# code of the repository, only git.
+# code of the repository, only git. No concurrency group: GitHub keeps one
+# pending run per group and drops the rest, which could drop the newest
+# commit; runs that race retry the push instead.
 # Only GitHub-owned actions pinned by commit SHA, as in ci.yml.
 
 name: Preview
@@ -18,9 +20,6 @@ on:
 
 permissions:
   contents: read
-
-concurrency:
-  group: preview
 
 jobs:
   preview:
@@ -41,13 +40,21 @@ jobs:
         env:
           COMMIT: ${{ github.event.workflow_run.head_sha }}
         run: |
-          # The fetch fails before the first preview, and the push creates it.
-          if git fetch --quiet origin refs/heads/preview; then
-            if git merge-base --is-ancestor "$COMMIT" FETCH_HEAD; then
-              echo "preview is at $(git rev-parse FETCH_HEAD), which has $COMMIT already."
+          # A run that ends meanwhile can move preview, so look again when
+          # the push is refused. The fetch fails before the first preview,
+          # and the push creates it.
+          for attempt in 1 2 3; do
+            if git fetch --quiet origin refs/heads/preview; then
+              if git merge-base --is-ancestor "$COMMIT" FETCH_HEAD; then
+                echo "preview is at $(git rev-parse FETCH_HEAD), which has $COMMIT already."
+                exit 0
+              fi
+            fi
+            # Without --force, so git refuses anything but a fast-forward.
+            if git push origin "$COMMIT:refs/heads/preview"; then
+              echo "preview is at $COMMIT now." | tee -a "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
-          fi
-          # Without --force, so git refuses anything but a fast-forward.
-          git push origin "$COMMIT:refs/heads/preview"
-          echo "preview is at $COMMIT now." | tee -a "$GITHUB_STEP_SUMMARY"
+            sleep $((attempt * 5))
+          done
+          exit 1
