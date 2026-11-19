@@ -232,7 +232,9 @@ function applyReaderStyle() {
 // goes back to the last saved style, unless a newer choice follows it.
 let savedStyle = null;
 let saving = Promise.resolve();
+let choices = 0;
 function setReaderStyle(style) {
+  const choice = ++choices;
   state.readerStyle = style;
   applyReaderStyle();
   saving = saving.then(async () => {
@@ -240,7 +242,7 @@ function setReaderStyle(style) {
       await api('POST', '/api/settings', { readerStyle: style });
       savedStyle = style;
     } catch (error) {
-      if (state.readerStyle !== style) return;
+      if (choice !== choices) return;
       state.readerStyle = savedStyle;
       applyReaderStyle();
       toast(error.message);
