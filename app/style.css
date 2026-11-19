@@ -773,12 +773,13 @@ main {
   padding: 3px 16px 3px 0;
 }
 
-/* Settings > Reader: each style's name in its own typeface. */
-.reader-styles {
+/* Settings > Reader and Updates: a list of radios, each with a name and
+   what it does. */
+.choices {
   margin: 0 0 12px;
 }
 
-.reader-styles label {
+.choices label {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
@@ -788,7 +789,12 @@ main {
   cursor: pointer;
 }
 
-.reader-styles input {
+.choices label:has(input:disabled) {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.choices input {
   flex: none;
   margin: 0;
   padding: 0;
@@ -796,10 +802,20 @@ main {
   accent-color: var(--accent);
 }
 
-.reader-styles .name {
-  min-width: 9em;
-  font-size: 17px;
+/* One width for both lists, whatever the name's size, so their columns line up. */
+.choices .name {
+  min-width: 150px;
   color: var(--fg-strong);
+}
+
+.choices .meta {
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+
+/* Reader: each style's name in its own typeface. */
+.reader-styles .name {
+  font-size: 17px;
 }
 
 .reader-styles .name.editorial {
@@ -816,9 +832,4 @@ main {
 
 .reader-styles .name.system {
   font-family: var(--system-sans);
-}
-
-.reader-styles .meta {
-  font-size: 13px;
-  color: var(--fg-muted);
 }

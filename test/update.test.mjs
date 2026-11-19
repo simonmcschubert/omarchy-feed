@@ -1,5 +1,5 @@
 // Tests for the update script against real git repositories: an "origin"
-// with releases and an installed checkout cloned from it, and for the
+// with releases and previews, and an installed checkout cloned from it, and for the
 // launcher and setup, which start and stop the server the same way
 // (server-control.sh). curl, setsid, notify-send and Omarchy's commands are
 // stand-ins that log their calls; a file named "server" stands for a Feed
@@ -81,6 +81,11 @@ esac`);
     commit(`Release ${version}`, files);
     git(origin, 'tag', '--annotate', `v${version}`, '--message', `v${version}`);
   };
+  // What the Preview workflow does once CI passed for main's newest commit.
+  const preview = () => {
+    git(origin, 'branch', '--force', 'preview', 'main');
+    return git(origin, 'rev-parse', 'main');
+  };
 
   // The launcher entry, as setup has omarchy-webapp-install write it.
   const entry = (exec) => {
@@ -106,7 +111,7 @@ esac`);
   const running = () => existsSync(server);
   const head = () => git(app, 'rev-parse', 'HEAD');
 
-  return { root, origin, app, git, commit, release, entry, install, open, run, launch, setup, calls, count, starts, stops, running, head };
+  return { root, origin, app, git, commit, release, preview, entry, install, open, run, launch, setup, calls, count, starts, stops, running, head };
 }
 
 test('check finds the newest release on origin', (t) => {
@@ -340,7 +345,7 @@ test('rejects versions that are not releases', (t) => {
   const s = sandbox(t);
   s.release('0.1.0');
   s.install();
-  for (const version of ['', 'v0.2.0', '0.2', '0.2.0-rc.1', '0.2.0;true']) {
+  for (const version of ['', 'v0.2.0', '0.2', '0.2.0-rc.1', '0.2.0;true', '1a2b3c4', 'A'.repeat(40), 'main']) {
     const r = s.run('install', version);
     assert.equal(r.status, 1, version);
     assert.match(r.stderr, /not a release version/);
@@ -364,6 +369,141 @@ test('version names the installed release', (t) => {
   rmSync(s.app, { recursive: true });
   s.install();
   assert.match(s.run('version').stdout, /^0\.1\.0-1-g[0-9a-f]+\n$/);
+});
+
+test("the channel is stable until switched, in the checkout's git config", (t) => {
+  const s = sandbox(t);
+  s.release('0.1.0');
+  s.install();
+  assert.equal(s.run('channel').stdout, 'stable\n');
+
+  const r = s.run('channel', 'preview');
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, '');
+  assert.equal(s.run('channel').stdout, 'preview\n');
+  assert.equal(s.git(s.app, 'config', '--local', '--get', 'feed.channel'), 'preview');
+  s.run('channel', 'stable');
+  assert.equal(s.run('channel').stdout, 'stable\n');
+
+  for (const args of [['beta'], ['preview', 'now'], ['']]) {
+    const refused = s.run('channel', ...args);
+    assert.equal(refused.status, 1, args.join(' '));
+    assert.match(refused.stderr, /update: not a channel: .*; choose stable or preview\n$/);
+  }
+  assert.equal(s.run('channel').stdout, 'stable\n');
+
+  s.git(s.app, 'config', 'feed.channel', 'edge');
+  const check = s.run('check');
+  assert.equal(check.status, 1);
+  assert.match(check.stderr, /update: feed\.channel is 'edge' in the git config of .*\/app, not stable or preview\n$/);
+  assert.deepEqual(s.calls(), []);
+});
+
+test('check on preview finds the newest preview; stable does not', (t) => {
+  const s = sandbox(t);
+  s.release('0.1.0');
+  s.install();
+  s.commit('Change');
+  const newest = s.preview();
+  s.commit('Not through CI yet');
+
+  assert.equal(s.run('check').stdout, 'current\n', 'stable: no newer release');
+  s.run('channel', 'preview');
+  const r = s.run('check');
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, `available ${newest}\n`);
+});
+
+test('check on preview offers releases before the first preview', (t) => {
+  const s = sandbox(t);
+  s.release('0.1.0');
+  s.install();
+  s.release('0.2.0');
+  s.run('channel', 'preview');
+  assert.equal(s.run('check').stdout, 'available 0.2.0\n');
+});
+
+test('download and install a preview', (t) => {
+  const s = sandbox(t);
+  s.release('0.1.0');
+  s.install();
+  s.release('0.2.0'); // its tag is not in the checkout yet
+  s.commit('Preview', { 'new.txt': 'new\n' });
+  const newest = s.preview();
+  const short = newest.slice(0, 7);
+  s.run('channel', 'preview');
+  const before = s.head();
+  s.open();
+
+  let r = s.run('download', newest);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(s.head(), before);
+  assert.equal(existsSync(join(s.app, 'new.txt')), false);
+  assert.equal(s.run('check').stdout, `downloaded ${newest}\n`);
+  assert.deepEqual(s.calls(), []);
+
+  r = s.run('install', newest);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, `Feed preview ${short} is installed.\n`);
+  assert.equal(s.head(), newest);
+  assert.equal(existsSync(join(s.app, 'new.txt')), true);
+  assert.equal(s.git(s.app, 'branch', '--show-current'), 'main');
+  assert.deepEqual([s.stops(), s.starts(), s.running()], [1, 1, true]);
+  assert.equal(s.calls().at(-1), `notify-send Feed updated Preview ${short} is installed.`);
+  assert.equal(s.run('check').stdout, 'current\n');
+  assert.equal(s.run('version').stdout, `0.2.0-1-g${short}\n`, 'named after the newest release');
+});
+
+test('a preview that does not start is undone like a release', (t) => {
+  const s = sandbox(t);
+  s.release('0.1.0');
+  s.install();
+  s.commit('Broken', { broken: 'x\n' });
+  const newest = s.preview();
+  const before = s.head();
+  s.open();
+
+  const r = s.run('install', newest);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, new RegExp(`update: Feed preview ${newest.slice(0, 7)} did not start, so Feed stays as it was`));
+  assert.equal(s.head(), before);
+  assert.equal(existsSync(join(s.app, 'broken')), false);
+  assert.deepEqual([s.stops(), s.starts(), s.running()], [1, 2, true]);
+});
+
+test('download refuses a commit that is not on the preview branch', (t) => {
+  const s = sandbox(t);
+  s.release('0.1.0');
+  s.install();
+  s.commit('Preview');
+  s.preview();
+  const later = s.commit('Not through CI yet');
+
+  for (const commit of [later, '0'.repeat(40)]) {
+    const r = s.run('download', commit);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, new RegExp(`update: can't download Feed preview ${commit.slice(0, 7)}: it is not on the preview branch of origin\n$`));
+  }
+});
+
+test('back on stable, a preview stays until a release is newer', (t) => {
+  const s = sandbox(t);
+  s.release('0.1.0');
+  s.install();
+  s.commit('Preview', { 'new.txt': 'new\n' });
+  const newest = s.preview();
+  s.run('channel', 'preview');
+  assert.equal(s.run('install', newest).status, 0);
+
+  s.run('channel', 'stable');
+  assert.equal(s.run('check').stdout, 'current\n', '0.1.0 is older: no going back');
+  assert.equal(s.head(), newest);
+
+  s.release('0.2.0');
+  assert.equal(s.run('check').stdout, 'available 0.2.0\n');
+  const r = s.run('install', '0.2.0');
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(s.run('version').stdout, '0.2.0\n');
 });
 
 test('the launcher starts the server when it is not running, then opens the window', (t) => {
