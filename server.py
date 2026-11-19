@@ -85,7 +85,18 @@ STATIC = {
     "/clean.mjs": ("clean.mjs", "text/javascript; charset=utf-8"),
     "/update.mjs": ("update.mjs", "text/javascript; charset=utf-8"),
     "/icon.svg": ("icon.svg", "image/svg+xml"),
+    # The reader's typefaces: variable fonts, Latin subset (licenses next to them).
+    "/fonts/source-serif-4.woff2": ("fonts/source-serif-4.woff2", "font/woff2"),
+    "/fonts/source-serif-4-italic.woff2": ("fonts/source-serif-4-italic.woff2", "font/woff2"),
+    "/fonts/inter.woff2": ("fonts/inter.woff2", "font/woff2"),
+    "/fonts/inter-italic.woff2": ("fonts/inter-italic.woff2", "font/woff2"),
+    "/fonts/literata.woff2": ("fonts/literata.woff2", "font/woff2"),
+    "/fonts/literata-italic.woff2": ("fonts/literata-italic.woff2", "font/woff2"),
 }
+
+# How the reader sets articles (Settings > Reader); style.css has the rules.
+READER_STYLES = ("editorial", "modern", "book", "system")
+DEFAULT_READER_STYLE = "editorial"
 
 # The page loads nothing from outside this server: articles are read from
 # local copies, and the browser refuses anything else.
@@ -161,6 +172,10 @@ CREATE TABLE IF NOT EXISTS items (
   UNIQUE (source_id, key)
 );
 CREATE INDEX IF NOT EXISTS items_state ON items(state);
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 """
 
 
@@ -652,6 +667,16 @@ class Store:
     def _run(self, sql, args=()):
         with self.lock:
             return self.db.execute(sql, args)
+
+    # Settings
+
+    def reader_style(self):
+        rows = self._query("SELECT value FROM settings WHERE key = 'reader_style'")
+        style = rows[0]["value"] if rows else None
+        return style if style in READER_STYLES else DEFAULT_READER_STYLE
+
+    def set_reader_style(self, style):
+        self._run("INSERT INTO settings (key, value) VALUES ('reader_style', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", (style,))
 
     # Sources
 
@@ -1167,6 +1192,9 @@ def theme_css(path):
             background = pick(THEME_VARIABLES["bg"])
             mode = "light" if background and luminance_is_light(background) else "dark"
     lines.append(f"  color-scheme: {mode};")
+    # Light text on a dark background looks heavier: the reader's variable
+    # fonts set it a little lighter there.
+    lines.append(f"  --text-weight: {370 if mode == 'dark' else 400};")
     return ":root {\n" + "\n".join(lines) + "\n}\n"
 
 
@@ -1498,6 +1526,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "items": store.items(),
                 "dataDir": str(store.dir),
                 "keepReadDays": KEEP_READ_DAYS,
+                "readerStyle": store.reader_style(),
                 "syncing": self.server.sync_lock.locked(),
             },
         )
@@ -1631,6 +1660,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.server.store.mark_read(ids, True)
         self.send_json(200, {"ok": True})
 
+    def post_settings(self, path):
+        style = self.read_json().get("readerStyle")
+        if style not in READER_STYLES:
+            raise ValueError(f"readerStyle is one of: {', '.join(READER_STYLES)}")
+        self.server.store.set_reader_style(style)
+        self.send_json(200, {"ok": True})
+
     def post_open(self, path):
         url = self.read_json().get("url")
         if not isinstance(url, str) or not re.match(r"^(https?://|mailto:)[^\s]+$", url, re.I):
@@ -1661,6 +1697,7 @@ ROUTES = {
     ("POST", "/api/items/#/read"): Handler.post_read,
     ("POST", "/api/read"): Handler.post_read_all,
     ("POST", "/api/open"): Handler.post_open,
+    ("POST", "/api/settings"): Handler.post_settings,
 }
 
 

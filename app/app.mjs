@@ -8,6 +8,7 @@ const state = {
   items: [],
   dataDir: '',
   keepReadDays: 30,
+  readerStyle: null, // Settings > Reader: one of READER_STYLES
   view: 'feed', // feed | reader | settings
   show: 'unread', // unread | all
   source: 0, // 0: all sources
@@ -49,6 +50,11 @@ async function load() {
   state.items = data.items;
   state.dataDir = data.dataDir;
   state.keepReadDays = data.keepReadDays;
+  // Only this page changes the style, so the server's copy is read once.
+  if (!state.readerStyle) {
+    state.readerStyle = savedStyle = data.readerStyle;
+    applyReaderStyle();
+  }
   if (state.source && !state.sources.some((s) => s.id === state.source)) state.source = 0;
 }
 
@@ -217,6 +223,34 @@ async function removeSource(source) {
   render();
 }
 
+// style.css sets the reader in the style named on <html>.
+function applyReaderStyle() {
+  document.documentElement.dataset.reader = state.readerStyle;
+}
+
+// Saves one choice at a time, in the order they were made. A failed save
+// goes back to the last saved style, unless a newer choice follows it.
+let savedStyle = null;
+let saving = Promise.resolve();
+let choices = 0;
+function setReaderStyle(style) {
+  const choice = ++choices;
+  state.readerStyle = style;
+  applyReaderStyle();
+  saving = saving.then(async () => {
+    try {
+      await api('POST', '/api/settings', { readerStyle: style });
+      savedStyle = style;
+    } catch (error) {
+      if (choice !== choices) return;
+      state.readerStyle = savedStyle;
+      applyReaderStyle();
+      toast(error.message);
+      render();
+    }
+  });
+}
+
 function show(view) {
   if (view === 'feed' && state.view === 'reader') {
     state.view = 'feed';
@@ -335,8 +369,8 @@ function renderReader() {
   const words = item.content ? item.content.replace(/<[^>]+>/g, ' ').split(/\s+/).filter(Boolean).length : 0;
   const meta = [source?.title, when(item.published || item.added_at, true), words ? `${Math.max(1, Math.round(words / 230))} min read` : null].filter(Boolean).join(' · ');
   const article = h('article', { class: 'reader' },
-    h('p', { class: 'meta' }, meta),
     h('h1', {}, item.title),
+    h('p', { class: 'meta' }, meta),
     removedLine(item.removed));
   if (item.state === 'ready') {
     const content = h('div', { class: 'content' });
@@ -395,6 +429,12 @@ function renderSettings() {
     sources,
     form,
     h('p', { class: 'muted small' }, 'A new source starts with its three newest items. Videos open in the YouTube app; articles are saved with their images and read here, without ads.'),
+    h('h2', { id: 'reader-style' }, 'Reader'),
+    h('div', { class: 'reader-styles', role: 'radiogroup', 'aria-labelledby': 'reader-style' },
+      READER_STYLES.map(([value, name, about]) => h('label', {},
+        h('input', { type: 'radio', name: 'reader-style', value, checked: value === state.readerStyle, onchange: () => setReaderStyle(value) }),
+        h('span', { class: `name ${value}` }, name),
+        h('span', { class: 'meta' }, about)))),
     h('h2', {}, 'Data'),
     h('p', {}, 'Saved in ', h('code', {}, state.dataDir), `. Read items are deleted ${state.keepReadDays} days after they were marked read.`),
     h('h2', {}, 'Keys'),
@@ -402,6 +442,14 @@ function renderSettings() {
   ));
   if (!state.sources.length && !state.adding) input.focus();
 }
+
+// The reader's styles, as server.py's READER_STYLES; style.css sets each.
+const READER_STYLES = [
+  ['editorial', 'Editorial serif', 'Source Serif text with Inter headings, as on Medium (default)'],
+  ['modern', 'Modern sans', 'Inter throughout'],
+  ['book', 'Book serif', 'Literata throughout, with small-caps section labels'],
+  ['system', 'System sans', 'Noto Sans, the system font'],
+];
 
 const KIND_NAMES = { feed: 'RSS feed', youtube: 'channel feed', sitemap: 'site map (no feed)' };
 const KEYS = [
@@ -448,7 +496,8 @@ addEventListener('keydown', (event) => {
     show(event.key === '1' ? 'feed' : 'settings');
     return;
   }
-  if (event.ctrlKey || event.altKey || event.metaKey || event.target.closest('input, select, textarea')) return;
+  // Keys typed into a field stay there; a radio (Settings > Reader) has no use for them.
+  if (event.ctrlKey || event.altKey || event.metaKey || event.target.closest('input:not([type="radio"]), select, textarea')) return;
   const key = event.key;
   if (key === 'r') return void sync();
   if (state.view === 'feed') {
