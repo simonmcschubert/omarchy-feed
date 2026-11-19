@@ -2,8 +2,10 @@
 // (server.py, Updater); this shows what it found, and asks it to check,
 // download and install. The button is always there: a circle of arrows that
 // checks for updates when clicked. When there is an update it becomes
-// Update, then Restart to update. Settings has the channel: Stable for
-// releases, Preview for every change once its tests pass.
+// Update: one click downloads and installs it, and Feed restarts. An update
+// downloaded otherwise (a terminal, or a window closed during the download)
+// shows Restart to update. Settings has the channel: Stable for releases,
+// Preview for every change once its tests pass.
 
 const POLL = 60 * 1000; // ms between asking the server for news
 const RESTART_POLL = 1000; // ms between asks while the server restarts
@@ -24,7 +26,8 @@ export function updateButton(server, asked) {
   const name = `Feed ${updateName(s.version)}`;
   switch (s.status) {
     case 'available':
-      return { icon: 'download', text: 'Update', tone: 'accent', tip: `${name} is available. Click to download it.` };
+      return { icon: 'download', text: 'Update', tone: 'accent',
+        tip: `${name} is available. Click to install it and restart Feed. Your sources and articles stay as they are.` };
     case 'downloading':
       return { icon: 'download', text: 'Downloading', tone: 'accent', tip: `Downloading ${name}.` };
     case 'downloaded':
@@ -230,11 +233,14 @@ export function startUpdates(root, { busy }) {
     render();
   }
 
+  // Clicked Update: downloads it and installs it straight away, so the
+  // button needs no second click.
   async function download() {
     server = { ...server, status: 'downloading' };
     render();
     const { json, error } = await call('POST', { action: 'download' });
     server = json ?? { ...server, status: 'failed', error: `can't download Feed ${updateName(server.version)}: ${error}` };
+    if (server.status === 'downloaded') return install();
     render();
   }
 

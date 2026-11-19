@@ -29,14 +29,16 @@ Feed looks for an update 15 seconds after it opens and every four hours
 while it is open. The update button, a circle of arrows at the right end of
 the top bar, checks now when clicked; hover it to see the installed version.
 When there is an update, the button turns into a down arrow with **Update**.
-Click it to download the update, then click **Restart to update** to install
-it: Feed restarts its server with the update (after a running sync) and
-reloads the window. When the new server does not answer, Feed goes back to
-the version it had. A notification confirms the update or says why it
-failed. When it fails before the restart (local changes in the checkout, for
-example), the button says **Update failed** and why, when hovered. Like
-`git pull`, this does not show the changes first; the release notes on
-GitHub list them. Updates never touch the data.
+One click downloads and installs it: Feed restarts its server with the update
+(after a running sync) and reloads the window. An update downloaded otherwise
+(`update download` in a terminal, or a window closed while it downloaded)
+shows **Restart to update** instead, which installs it the same way. When the
+new server does not answer, Feed goes back to the version it had. A
+notification confirms the update or says why it failed. When it fails before
+the restart (local changes in the checkout, for example), the button says
+**Update failed** and why, when hovered. Like `git pull`, this does not show
+the changes first; the release notes on GitHub list them. Updates never
+touch the data.
 
 ![The update button: check, Update, Restart to update, Updating, Up to date](docs/update.png)
 

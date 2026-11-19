@@ -32,6 +32,8 @@ test('the button offers a release step by step', () => {
   const steps = ['available', 'downloading', 'downloaded', 'installing'].map((status) => updateButton(server({ status, version: '0.2.0' }), idle));
   assert.deepEqual(steps.map((b) => b.text), ['Update', 'Downloading', 'Restart to update', 'Updating']);
   assert.deepEqual(steps.map((b) => b.tone), ['accent', 'accent', 'accent', 'accent']);
+  assert.equal(steps[0].tip, 'Feed 0.2.0 is available. Click to install it and restart Feed. Your sources and articles stay as they are.',
+    'one click downloads and installs it');
   assert.equal(steps[2].tip, 'Feed 0.2.0 is downloaded. Click to restart Feed with it. Your sources and articles stay as they are.');
   assert.equal(steps[3].busy, true);
 });
@@ -48,7 +50,7 @@ test('a preview is named by its commit', () => {
   assert.equal(updateName('0.2.0'), '0.2.0');
   assert.equal(updateName(preview), 'preview 1a2b3c4');
   const offer = (status) => updateButton(server({ status, version: preview, channel: 'preview' }), idle).tip;
-  assert.equal(offer('available'), 'Feed preview 1a2b3c4 is available. Click to download it.');
+  assert.equal(offer('available'), 'Feed preview 1a2b3c4 is available. Click to install it and restart Feed. Your sources and articles stay as they are.');
   assert.equal(offer('downloaded'), 'Feed preview 1a2b3c4 is downloaded. Click to restart Feed with it. Your sources and articles stay as they are.');
 });
 
